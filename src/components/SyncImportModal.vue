@@ -10,6 +10,16 @@ import {
 } from 'lucide-vue-next'
 import type { BorrowRecord, SyncMeta } from '../types/library'
 
+async function parseJsonSafe(resp: Response): Promise<any> {
+  const text = await resp.text()
+  try {
+    return text ? JSON.parse(text) : {}
+  } catch {
+    const preview = text.replace(/\s+/g, ' ').slice(0, 100)
+    throw new Error(`接口返回异常 (HTTP ${resp.status})：${preview || '非 JSON 响应'}`)
+  }
+}
+
 const props = defineProps<{
   open: boolean
   syncMeta: SyncMeta
@@ -111,7 +121,7 @@ async function startZjlibQr(type: 'wechat' | 'alipay' = zjlibQrType.value) {
   zjlibQrImage.value = ''
   zjlibQrStatus.value = '正在生成二维码...'
   try {
-    const res = await fetch(`/api/zjlib/qr?action=create&type=${type}`).then((r) => r.json())
+    const res = await parseJsonSafe(await fetch(`/api/zjlib/qr?action=create&type=${type}`))
     if (!res.ok) {
       zjlibQrStatus.value = res.message || '获取二维码失败'
       return
@@ -125,7 +135,7 @@ async function startZjlibQr(type: 'wechat' | 'alipay' = zjlibQrType.value) {
       try {
         const st = await fetch(
           `/api/zjlib/qr?action=status&uuid=${encodeURIComponent(zjlibQrUuid.value)}`
-        ).then((r) => r.json())
+        ).then((r) => parseJsonSafe(r))
         if (st.status === 'SCANNED') {
           zjlibQrStatus.value = '已扫码，请在手机上点击确认授权...'
         } else if (st.status === 'COMPLETE' && st.token) {
@@ -152,7 +162,7 @@ async function syncZjlibWithToken(tokenValue: string) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: tokenValue, maxPages: 30 }),
     })
-    const data = await resp.json()
+    const data = await parseJsonSafe(resp)
     if (!data.ok) {
       zjStatusMsg.value = { type: 'error', text: data.message || '浙江图书馆同步失败' }
       return
@@ -202,7 +212,7 @@ onMounted(() => {
 async function refreshHzlibCaptcha() {
   try {
     const resp = await fetch('/api/hzlib/captcha')
-    const data = await resp.json()
+    const data = await parseJsonSafe(resp)
     if (data.ok) {
       hzlibNeedCaptcha.value = true
       hzlibCaptchaImage.value = data.captchaImage || ''
@@ -255,7 +265,7 @@ async function handleHzlibOnlineSync() {
         maxPages: 30,
       }),
     })
-    const data = await resp.json()
+    const data = await parseJsonSafe(resp)
     if (!data.ok) {
       if (data.needCaptcha && data.captchaImage) {
         hzlibNeedCaptcha.value = true
@@ -317,7 +327,7 @@ async function handleZjlibOnlineSync() {
         maxPages: 30,
       }),
     })
-    const data = await resp.json()
+    const data = await parseJsonSafe(resp)
     if (!data.ok) {
       zjStatusMsg.value = { type: 'error', text: data.message || '浙江图书馆同步失败' }
       return
@@ -393,7 +403,7 @@ async function handleOneClickSyncAll() {
                 maxPages: 30,
               }),
             })
-            const data = await resp.json()
+            const data = await parseJsonSafe(resp)
             if (!data.ok) {
               if (data.needCaptcha && data.captchaImage) {
                 hzlibNeedCaptcha.value = true
@@ -457,7 +467,7 @@ async function handleOneClickSyncAll() {
                 maxPages: 30,
               }),
             })
-            const data = await resp.json()
+            const data = await parseJsonSafe(resp)
             if (!data.ok) {
               const errText = data.message || '同步失败'
               zjStatusMsg.value = { type: 'error', text: errText }
@@ -578,7 +588,7 @@ async function handleOneClickSyncAll() {
         <!-- TAB 1: 杭州图书馆 -->
         <div v-if="activeTab === 'hzlib'" class="space-y-4">
           <!-- 1. 登录表单控件在上 -->
-          <div :class="mobileMode ? 'grid grid-cols-1 gap-3' : 'grid grid-cols-1 sm:grid-cols-2 gap-3'">
+          <div class="grid grid-cols-1 gap-3">
             <div>
               <label class="block text-xs font-medium text-slate-700 mb-1">读者证号 / 二代身份证号</label>
               <input
@@ -753,7 +763,7 @@ async function handleOneClickSyncAll() {
 
           <!-- 方式1：读者证/身份证+密码直连 -->
           <div v-else class="space-y-3">
-            <div :class="mobileMode ? 'grid grid-cols-1 gap-3' : 'grid grid-cols-1 sm:grid-cols-2 gap-3'">
+            <div class="grid grid-cols-1 gap-3">
               <div>
                 <label class="block text-xs font-medium text-slate-700 mb-1">浙图账号（读者证/身份证/手机号）</label>
                 <input
