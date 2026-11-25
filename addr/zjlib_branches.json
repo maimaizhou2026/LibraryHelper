@@ -1,0 +1,107 @@
+{
+  "library": "zjlib",
+  "groupLabel": "🏛️ 浙江图书馆",
+  "officialUrl": "https://www.zjlib.cn/",
+  "dropdownOptions": [
+    {
+      "value": "zjlib:all",
+      "label": "🏛️ 浙江图书馆（全部馆区）",
+      "districtId": "",
+      "matchKeywords": []
+    },
+    {
+      "value": "zjlib:1916325141324353538",
+      "label": "🏛️ 浙图 · 之江馆区",
+      "districtId": "1916325141324353538",
+      "matchKeywords": ["之江"]
+    },
+    {
+      "value": "zjlib:1916325244624236545",
+      "label": "🏛️ 浙图 · 曙光路馆区",
+      "districtId": "1916325244624236545",
+      "matchKeywords": ["曙光路"]
+    },
+    {
+      "value": "zjlib:1960228014308634625",
+      "label": "🏛️ 浙图 · 大学路馆区",
+      "districtId": "1960228014308634625",
+      "matchKeywords": ["大学路"]
+    },
+    {
+      "value": "zjlib:1960237529544437762",
+      "label": "🏛️ 浙图 · 孤山路馆区",
+      "districtId": "1960237529544437762",
+      "matchKeywords": ["孤山"]
+    }
+  ],
+  "districtIdMap": {
+    "1916325141324353538": "之江馆区",
+    "1916325244624236545": "曙光路馆区",
+    "1960228014308634625": "大学路馆区",
+    "1960237529544437762": "孤山路馆区",
+    "1960238282716921857": "嘉业堂藏书楼",
+    "1953763801877389313": "其他馆区"
+  },
+  "branches": [
+    {
+      "id": "zj_shuguang",
+      "category": "直属馆区",
+      "name": "浙江图书馆",
+      "aliases": ["曙光路"],
+      "address": "杭州市西湖区曙光路73号(近黄龙洞)",
+      "uid": "f757e6ee545cab16260bd016",
+      "x": 1337446029,
+      "y": 351650597,
+      "cityCode": 179,
+      "priority": 1
+    },
+    {
+      "id": "zj_zhijiang",
+      "category": "直属馆区",
+      "name": "浙江图书馆(之江馆)",
+      "aliases": ["之江馆", "保存本（立库）"],
+      "address": "杭州市西湖区文景路与枫桦路交叉口之江文化中心",
+      "uid": "93a5ec91cb9814ac88b988e1",
+      "x": 1337062007,
+      "y": 350343834,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "zj_daxuelu",
+      "category": "直属馆区",
+      "name": "浙江图书馆大学路馆舍(南门)",
+      "aliases": ["大学路"],
+      "address": "杭州市上城区大学路102号",
+      "uid": "75bcac4faec8581d33621212",
+      "x": 1337960421,
+      "y": 351521449,
+      "cityCode": 179,
+      "priority": 4
+    },
+    {
+      "id": "zj_gushan",
+      "category": "直属馆区",
+      "name": "浙江图书馆孤山馆舍",
+      "aliases": ["孤山"],
+      "address": "杭州市西湖区孤山路28号/龙井路1号西湖风景名胜区内",
+      "uid": "cd0c2b2da9c8e0c029fc48c2",
+      "x": 1337496496,
+      "y": 351481768,
+      "cityCode": 179,
+      "priority": 4
+    },
+    {
+      "id": "zj_jiayetang",
+      "category": "直属馆区",
+      "name": "嘉业藏书楼",
+      "aliases": ["嘉业堂", "嘉业藏书楼"],
+      "address": "浙江省湖州市南浔区南浔镇文园(小莲庄旁)",
+      "uid": "6478f0c76601b09ef8dc8516",
+      "x": 1340694694,
+      "y": 359441534,
+      "cityCode": 294,
+      "priority": 4
+    }
+  ]
+}

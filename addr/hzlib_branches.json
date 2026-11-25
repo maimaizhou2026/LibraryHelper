@@ -1,0 +1,591 @@
+{
+  "library": "hzlib",
+  "groupLabel": "📚 杭州图书馆及各区县分馆",
+  "officialUrl": "https://www.zjhzlib.cn/",
+  "dropdownOptions": [
+    {
+      "value": "hzlib:all",
+      "label": "📚 杭州图书馆（全部馆区）",
+      "matchKeywords": []
+    },
+    {
+      "value": "hzlib:0000",
+      "label": "📚 杭图 · 市民中心总馆(解放东路)",
+      "matchKeywords": ["市民中心", "杭州图书馆", "文献借阅中心"]
+    },
+    {
+      "value": "hzlib:local:少儿分馆",
+      "label": "📚 杭图 · 少年儿童图书馆(曙光路)",
+      "matchKeywords": ["少儿", "少年儿童"]
+    },
+    {
+      "value": "hzlib:local:生活主题分馆",
+      "label": "📚 杭图 · 生活主题分馆(浣纱路)",
+      "matchKeywords": ["生活主题"]
+    },
+    {
+      "value": "hzlib:local:环保分馆",
+      "label": "📚 杭图 · 环保分馆(天目山路)",
+      "matchKeywords": ["环保分馆"]
+    },
+    {
+      "value": "hzlib:local:佛学分馆",
+      "label": "📚 杭图 · 佛学分馆(天竺路)",
+      "matchKeywords": ["佛学分馆"]
+    },
+    {
+      "value": "hzlib:local:科技分馆",
+      "label": "📚 杭图 · 科技分馆(滨江)",
+      "matchKeywords": ["科技分馆"]
+    },
+    {
+      "value": "hzlib:local:动漫分馆",
+      "label": "📚 杭图 · 动漫分馆(白马湖)",
+      "matchKeywords": ["动漫分馆"]
+    },
+    {
+      "value": "hzlib:local:茶文化主题分馆",
+      "label": "📚 杭图 · 茶文化分馆(龙井路)",
+      "matchKeywords": ["茶文化"]
+    },
+    {
+      "value": "hzlib:local:钢琴主题分馆",
+      "label": "📚 杭图 · 钢琴分馆(清吟街)",
+      "matchKeywords": ["钢琴"]
+    },
+    {
+      "value": "hzlib:local:其他主题分馆",
+      "label": "📚 杭图 · 其他直属主题分馆",
+      "matchKeywords": ["宋韵", "国医", "城市学", "棋院", "电影", "盲文", "西泠", "版本馆", "财商", "运动"]
+    },
+    {
+      "value": "hzlib:1900",
+      "label": "📚 杭图 · 上城区图书馆",
+      "matchKeywords": ["上城"]
+    },
+    {
+      "value": "hzlib:1100",
+      "label": "📚 杭图 · 西湖区图书馆",
+      "matchKeywords": ["西湖"]
+    },
+    {
+      "value": "hzlib:1200",
+      "label": "📚 杭图 · 滨江区图书馆/科技分馆",
+      "matchKeywords": ["滨江"]
+    },
+    {
+      "value": "hzlib:0900",
+      "label": "📚 杭图 · 拱墅区图书馆",
+      "matchKeywords": ["拱墅"]
+    },
+    {
+      "value": "hzlib:1800",
+      "label": "📚 杭图 · 拱墅区武林馆/原下城",
+      "matchKeywords": ["武林", "下城"]
+    },
+    {
+      "value": "hzlib:0200",
+      "label": "📚 杭图 · 萧山图书馆",
+      "matchKeywords": ["萧山"]
+    },
+    {
+      "value": "hzlib:2700",
+      "label": "📚 杭图 · 余杭区图书馆",
+      "matchKeywords": ["余杭"]
+    },
+    {
+      "value": "hzlib:0300",
+      "label": "📚 杭图 · 临平区图书馆",
+      "matchKeywords": ["临平"]
+    },
+    {
+      "value": "hzlib:2400",
+      "label": "📚 杭图 · 钱塘区图书馆",
+      "matchKeywords": ["钱塘"]
+    },
+    {
+      "value": "hzlib:0500",
+      "label": "📚 杭图 · 富阳图书馆",
+      "matchKeywords": ["富阳"]
+    },
+    {
+      "value": "hzlib:0600",
+      "label": "📚 杭图 · 临安图书馆",
+      "matchKeywords": ["临安"]
+    },
+    {
+      "value": "hzlib:0400",
+      "label": "📚 杭图 · 桐庐图书馆",
+      "matchKeywords": ["桐庐"]
+    },
+    {
+      "value": "hzlib:0700",
+      "label": "📚 杭图 · 建德图书馆",
+      "matchKeywords": ["建德"]
+    },
+    {
+      "value": "hzlib:0800",
+      "label": "📚 杭图 · 淳安图书馆",
+      "matchKeywords": ["淳安"]
+    }
+  ],
+  "mainCenterRooms": [
+    "文献借阅中心",
+    "儿童借阅区",
+    "专题文献",
+    "音乐分馆",
+    "非遗",
+    "法律分馆",
+    "地方文献",
+    "成人外借",
+    "报刊",
+    "期刊",
+    "电子读物",
+    "外文",
+    "古籍",
+    "签名本",
+    "廉政",
+    "二线书库",
+    "市民中心",
+    "网借",
+    "悦读",
+    "物流",
+    "调拨",
+    "中华版本",
+    "贵宾室"
+  ],
+  "branches": [
+    {
+      "id": "hz_main",
+      "category": "总馆",
+      "name": "杭州图书馆",
+      "aliases": ["市民中心", "文献借阅中心"],
+      "address": "杭州市上城区解放东路18号市民中心J楼",
+      "uid": "a01c9386253a23255b109373",
+      "x": 1338239315,
+      "y": 351430308,
+      "cityCode": 179,
+      "priority": 1
+    },
+    {
+      "id": "hz_movie",
+      "category": "直属主题分馆",
+      "name": "杭州图书馆-电影分馆",
+      "aliases": ["电影分馆"],
+      "address": "杭州市上城区解放东路18号市民中心J楼杭州图书馆内",
+      "uid": "cd6a64b4b896082cfa0cad09",
+      "x": 1338240064,
+      "y": 351431943,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_children",
+      "category": "直属主题分馆",
+      "name": "杭州少年儿童图书馆",
+      "aliases": ["少儿分馆", "杭少图", "儿童健康分馆", "少年儿童图书馆"],
+      "address": "杭州市西湖区曙光路75号",
+      "uid": "8fcb0b5c35e2ee49fb221344",
+      "x": 1337424706,
+      "y": 351650420,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_life",
+      "category": "直属主题分馆",
+      "name": "杭州图书馆(生活主题分馆)",
+      "aliases": ["生活主题分馆"],
+      "address": "杭州市上城区浣纱路254号",
+      "uid": "85c274ed067707635cbe86eb",
+      "x": 1337788867,
+      "y": 351535760,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_buddhism",
+      "category": "直属主题分馆",
+      "name": "杭州图书馆(佛学分馆)",
+      "aliases": ["佛学分馆"],
+      "address": "杭州市西湖区天竺路317号",
+      "uid": "15c30c6be8814a02a9f0cdae",
+      "x": 1337012844,
+      "y": 351186704,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_env",
+      "category": "直属主题分馆",
+      "name": "杭州图书馆(环保分馆)",
+      "aliases": ["环保分馆"],
+      "address": "杭州市拱墅区临半路90号",
+      "uid": "ac22afa9ed15a93d02294f5d",
+      "x": 1338070976,
+      "y": 353097937,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_tech",
+      "category": "直属主题分馆",
+      "name": "杭州图书馆(科技分馆)",
+      "aliases": ["科技分馆"],
+      "address": "杭州市滨江区泰安路200号文化中心6-8层",
+      "uid": "fca223f0f3ea07e63110af9a",
+      "x": 1338258789,
+      "y": 350962691,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_comic",
+      "category": "直属主题分馆",
+      "name": "杭州图书馆(动漫分馆)",
+      "aliases": ["动漫分馆"],
+      "address": "杭州市滨江区白马湖路375号中国动漫博物馆3楼",
+      "uid": "90bbf27299b01cc72cb96dfd",
+      "x": 1338210700,
+      "y": 350350842,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_tea",
+      "category": "直属主题分馆",
+      "name": "杭州图书馆茶文化主题分馆",
+      "aliases": ["茶文化主题分馆", "茶文化分馆"],
+      "address": "杭州市西湖区慈母桥路189-2号",
+      "uid": "89f997366bce81a82ce67b5c",
+      "x": 1336403123,
+      "y": 350669478,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_piano",
+      "category": "直属主题分馆",
+      "name": "杭州图书馆(钢琴分馆)",
+      "aliases": ["钢琴主题分馆", "钢琴分馆"],
+      "address": "杭州市拱墅区大兜路206号杭州郎朗艺术世界内",
+      "uid": "2f9b70759bc2ed7f3310af4d",
+      "x": 1337521163,
+      "y": 352133034,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_songyun",
+      "category": "直属主题分馆",
+      "name": "杭州图书馆(宋韵分馆)",
+      "aliases": ["宋韵分馆"],
+      "address": "杭州市上城区四季青街道之江路1082号",
+      "uid": "a8ce561fc4a3be8588b98811",
+      "x": 1338330834,
+      "y": 351370742,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_finance",
+      "category": "直属主题分馆",
+      "name": "杭州图书馆(财商主题分馆)",
+      "aliases": ["财商主题分馆", "运动分馆"],
+      "address": "杭州市拱墅区善贤路28号城北体育公园2幢",
+      "uid": "f0bd120f23965919f7e73b94",
+      "x": 1337720272,
+      "y": 352276829,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_tcm",
+      "category": "直属主题分馆",
+      "name": "生生堂大运河国药文化体验中心",
+      "aliases": ["国医康养"],
+      "address": "杭州市拱墅区湖墅街道大兜路130-1号(国医康养主题分馆)",
+      "uid": "568c9eaf4e473786a11de995",
+      "x": 1337542297,
+      "y": 352095677,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_city",
+      "category": "直属主题分馆",
+      "name": "杭州国际城市学研究中心(杭州研究院)",
+      "aliases": ["城市学分馆"],
+      "address": "杭州市余杭区余杭塘路2318号杭师大仓前校区(城市学分馆)",
+      "uid": "e216e5e8ba68fa0748cc4ae0",
+      "x": 1336091295,
+      "y": 352015440,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_chess",
+      "category": "直属主题分馆",
+      "name": "中国棋院杭州分院",
+      "aliases": ["棋院分馆"],
+      "address": "杭州市钱江新城钱潮路2号天元大厦(棋院分馆)",
+      "uid": "782ca864b143f40a1df74d21",
+      "x": 1338410838,
+      "y": 351539389,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_braille",
+      "category": "直属主题分馆",
+      "name": "杭州市残疾人综合服务中心",
+      "aliases": ["盲文"],
+      "address": "杭州市拱墅区庆春路110号(盲文图书馆)",
+      "uid": "cc37d107dd2c9484c9c3db80",
+      "x": 1337851886,
+      "y": 351578527,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_xiling",
+      "category": "直属主题分馆",
+      "name": "西泠印社书画篆刻院",
+      "aliases": ["西泠印社"],
+      "address": "杭州市拱墅区余杭塘路180号(西泠印社图书馆)",
+      "uid": "c27bdfee6f9d75799cf779e6",
+      "x": 1337290887,
+      "y": 352048014,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_banben",
+      "category": "直属主题分馆",
+      "name": "杭州国家版本馆",
+      "aliases": ["版本馆"],
+      "address": "杭州市余杭区瓶窑镇文润路1号",
+      "uid": "e1d2b2bb748856c9b320a875",
+      "x": 1336110043,
+      "y": 353163058,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_polytech",
+      "category": "共建分馆",
+      "name": "杭州职业技术学院-图书馆",
+      "aliases": ["杭州职业技术学院"],
+      "address": "杭州市钱塘区学源街68号",
+      "uid": "1816533494478705fb2d613c",
+      "x": 1339852209,
+      "y": 352397806,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "hz_cppcc",
+      "category": "共建分馆",
+      "name": "浙江省政协",
+      "aliases": ["浙江省政协"],
+      "address": "杭州市西湖区仁谐路1号",
+      "uid": "060f5e53c394f0d6081cc716",
+      "x": 1337625454,
+      "y": 351649612,
+      "cityCode": 179,
+      "priority": 2
+    },
+    {
+      "id": "dist_shangcheng_old",
+      "category": "区县总馆",
+      "name": "上城区青少年图书馆",
+      "aliases": ["上城区图书馆(原上城)"],
+      "address": "杭州市上城区小营街道中河中路62号(原上城馆)",
+      "uid": "197b0629e00edaa0c356ac4e",
+      "x": 1337851790,
+      "y": 351371258,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_shangcheng",
+      "category": "区县总馆",
+      "name": "上城区图书馆",
+      "aliases": ["上城区图书馆"],
+      "address": "杭州市上城区太平门直街458号文化中心6楼",
+      "uid": "602ce451dd0e1c0aad080fe1",
+      "x": 1338216900,
+      "y": 351605608,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_xihu",
+      "category": "区县总馆",
+      "name": "杭州市西湖区图书馆",
+      "aliases": ["西湖区图书馆"],
+      "address": "杭州市西湖区古墩路413-1号",
+      "uid": "99c0f851a31eb1bfb35c6aee",
+      "x": 1337019231,
+      "y": 351897445,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_binjiang",
+      "category": "区县总馆",
+      "name": "杭州图书馆(科技分馆)",
+      "aliases": ["滨江区图书馆"],
+      "address": "杭州市滨江区泰安路200号文化中心6-8层(滨江区图书馆)",
+      "uid": "fca223f0f3ea07e63110af9a",
+      "x": 1338258789,
+      "y": 350962691,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_gongshu_wulin",
+      "category": "区县总馆",
+      "name": "拱墅区图书馆(武林馆)",
+      "aliases": ["武林馆", "下城"],
+      "address": "杭州市拱墅区朝晖街道潮王路8-1号文化体育中心1楼",
+      "uid": "69fcd6df30838d52ca291559",
+      "x": 1337817098,
+      "y": 352012455,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_gongshu",
+      "category": "区县总馆",
+      "name": "杭州市拱墅区图书馆",
+      "aliases": ["拱墅区图书馆"],
+      "address": "杭州市拱墅区北城街55号人防大厦B座1-2层",
+      "uid": "f44609180199f86bb11e36d1",
+      "x": 1337319726,
+      "y": 352375800,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_xiaoshan",
+      "category": "区县总馆",
+      "name": "杭州市萧山图书馆",
+      "aliases": ["萧山图书馆"],
+      "address": "杭州市萧山区市心中路958号",
+      "uid": "3abd2ba2c4b0ce9eae080f61",
+      "x": 1338899198,
+      "y": 350642089,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_yuhang",
+      "category": "区县总馆",
+      "name": "杭州市余杭区图书馆",
+      "aliases": ["余杭区图书馆"],
+      "address": "杭州市余杭区瓶窑镇崇北街9号余杭文化中心",
+      "uid": "22994b694b92c7dd5cd4feab",
+      "x": 1335658406,
+      "y": 353004491,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_linping",
+      "category": "区县总馆",
+      "name": "临平图书馆",
+      "aliases": ["临平区图书馆", "临平图书馆"],
+      "address": "杭州市临平区南苑街道藕花洲大街231号",
+      "uid": "05f91ecc782f2daa451a32a1",
+      "x": 1339264128,
+      "y": 353606484,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_qiantang",
+      "category": "区县总馆",
+      "name": "钱塘区图书馆",
+      "aliases": ["钱塘区图书馆"],
+      "address": "杭州市钱塘区下沙街道学源街1366号钱塘文体中心2号楼",
+      "uid": "d7cfc3e55f488addda2f289f",
+      "x": 1339513044,
+      "y": 352355903,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_fuyang",
+      "category": "区县总馆",
+      "name": "富阳区图书馆",
+      "aliases": ["富阳"],
+      "address": "杭州市富阳区富春街4号",
+      "uid": "9dd24f8e8e5ae8692b3a9fe4",
+      "x": 1335507772,
+      "y": 348877604,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_linan",
+      "category": "区县总馆",
+      "name": "临安区图书馆",
+      "aliases": ["临安"],
+      "address": "杭州市临安区衣锦街321号",
+      "uid": "c5ded10f32009e708bb988c7",
+      "x": 1332882919,
+      "y": 351273750,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_tonglu",
+      "category": "区县总馆",
+      "name": "桐庐县图书馆",
+      "aliases": ["桐庐"],
+      "address": "杭州市桐庐县白云源路608号",
+      "uid": "dc0f0adcaa38c922f82213c4",
+      "x": 1332579620,
+      "y": 345661449,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_jiande",
+      "category": "区县总馆",
+      "name": "建德市图书馆",
+      "aliases": ["建德"],
+      "address": "杭州市建德市江滨中路118-12号",
+      "uid": "cd82cc46f53b77f8246e98be",
+      "x": 1328034958,
+      "y": 341498132,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_chunan",
+      "category": "区县总馆",
+      "name": "淳安县图书馆",
+      "aliases": ["淳安"],
+      "address": "杭州市淳安县珍珠一路111号",
+      "uid": "fa835ce2ed78e0b7e912e49f",
+      "x": 1326041900,
+      "y": 343105754,
+      "cityCode": 179,
+      "priority": 3
+    },
+    {
+      "id": "dist_scenic",
+      "category": "其他分馆",
+      "name": "杭州西湖风景名胜区政务服务中心",
+      "aliases": ["西湖风景区分馆"],
+      "address": "杭州市西湖区赵公堤18号",
+      "uid": "7c4a2b01e913ee47b2077d11",
+      "x": 1337301531,
+      "y": 351444580,
+      "cityCode": 179,
+      "priority": 3
+    }
+  ]
+}
