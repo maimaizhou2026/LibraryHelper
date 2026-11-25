@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
-    "build": "vite build",
+    "build:api": "esbuild src/server/vercelEntry.ts --bundle --platform=node --target=node20 --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=api/index.js",
+    "build": "npm run build:api && vite build",
     "preview": "vite preview --host",
     "start": "vite preview --host 0.0.0.0 --port 5173"
   },

@@ -457,6 +457,17 @@ async function createHzlibCaptchaSession(ua: string) {
 export function registerLibraryApiMiddlewares(server: {
   middlewares: { use: (route: string, fn: (req: any, res: any, next?: any) => any) => void }
 }) {
+      server.middlewares.use('/api/health', (_req, res) => {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.end(
+          JSON.stringify({
+            ok: true,
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+          })
+        )
+      })
+
       server.middlewares.use('/api/hzlib/latest-cache', (_req, res) => {
         res.setHeader('Content-Type', 'application/json; charset=utf-8')
         res.end(
