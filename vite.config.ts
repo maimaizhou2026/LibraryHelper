@@ -18,6 +18,14 @@ export default defineConfig({
           if (id.includes('node_modules/vue') || id.includes('node_modules/lucide-vue-next')) {
             return 'vendor-ui'
           }
+          if (
+            id.includes('/addr/') ||
+            id.includes('\\addr\\') ||
+            id.includes('cnRelayClient') ||
+            id.includes('cnCatalogClient')
+          ) {
+            return 'vendor-library-data'
+          }
         },
       },
     },

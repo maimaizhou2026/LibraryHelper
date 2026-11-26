@@ -20,6 +20,7 @@ import {
   loadSavedCredential,
   saveCredentialToStorage,
 } from '../utils/cryptoAuth'
+import { apiFetch } from '../services/cnCatalogClient'
 
 async function parseJsonSafe(resp: Response): Promise<any> {
   const text = await resp.text()
@@ -151,7 +152,7 @@ async function startZjlibQr(type: 'wechat' | 'alipay' = zjlibQrType.value) {
   zjlibQrImage.value = ''
   zjlibQrStatus.value = '正在生成二维码...'
   try {
-    const res = await parseJsonSafe(await fetch(`/api/zjlib/qr?action=create&type=${type}`))
+    const res = await parseJsonSafe(await apiFetch(`/api/zjlib/qr?action=create&type=${type}`))
     if (!res.ok) {
       zjlibQrStatus.value = res.message || '获取二维码失败'
       return
@@ -163,7 +164,7 @@ async function startZjlibQr(type: 'wechat' | 'alipay' = zjlibQrType.value) {
 
     zjlibQrTimer = window.setInterval(async () => {
       try {
-        const st = await fetch(
+        const st = await apiFetch(
           `/api/zjlib/qr?action=status&uuid=${encodeURIComponent(zjlibQrUuid.value)}`
         ).then((r) => parseJsonSafe(r))
         if (st.status === 'SCANNED') {
@@ -187,7 +188,7 @@ async function startZjlibQr(type: 'wechat' | 'alipay' = zjlibQrType.value) {
 async function syncZjlibWithToken(tokenValue: string) {
   zjlibLoading.value = true
   try {
-    const resp = await fetch('/api/zjlib/sync', {
+    const resp = await apiFetch('/api/zjlib/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: tokenValue, maxPages: 30 }),
@@ -245,7 +246,7 @@ async function prepareHzlibClientEncryptedPayload(plainPassword: string) {
       loginSessionCookie: hzlibCaptchaCookie.value,
     }
   }
-  const initResp = await fetch('/api/hzlib/captcha?mode=init')
+  const initResp = await apiFetch('/api/hzlib/captcha?mode=init')
   const initData = await parseJsonSafe(initResp)
   if (!initData.ok || !initData.pemKey || !initData.sessionCookie) {
     throw new Error(initData.message || '初始化杭州图书馆安全加密会话失败')
@@ -258,7 +259,7 @@ async function prepareHzlibClientEncryptedPayload(plainPassword: string) {
 
 async function refreshHzlibCaptcha() {
   try {
-    const resp = await fetch('/api/hzlib/captcha')
+    const resp = await apiFetch('/api/hzlib/captcha')
     const data = await parseJsonSafe(resp)
     if (data.ok) {
       hzlibNeedCaptcha.value = true
@@ -295,7 +296,7 @@ async function handleHzlibOnlineSync() {
       hzlibPassword.value
     )
 
-    const resp = await fetch('/api/hzlib/sync', {
+    const resp = await apiFetch('/api/hzlib/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -360,7 +361,7 @@ async function handleZjlibOnlineSync() {
       zjlibRemember.value
     )
     const encryptedPassword = encryptZjlibPasswordClient(zjlibPassword.value)
-    const resp = await fetch('/api/zjlib/sync', {
+    const resp = await apiFetch('/api/zjlib/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -432,7 +433,7 @@ async function handleOneClickSyncAll() {
             )
             const { encryptedPassword, loginSessionCookie } =
               await prepareHzlibClientEncryptedPayload(hzlibPassword.value)
-            const resp = await fetch('/api/hzlib/sync', {
+            const resp = await apiFetch('/api/hzlib/sync', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -499,7 +500,7 @@ async function handleOneClickSyncAll() {
               zjlibRemember.value
             )
             const encryptedPassword = encryptZjlibPasswordClient(zjlibPassword.value)
-            const resp = await fetch('/api/zjlib/sync', {
+            const resp = await apiFetch('/api/zjlib/sync', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({

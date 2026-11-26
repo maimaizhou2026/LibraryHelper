@@ -257,7 +257,6 @@ onBeforeUnmount(() => {
                 :class="group.coverUrl && !brokenCovers.has(group.normKey) ? 'cursor-zoom-in' : ''"
                 :title="group.coverUrl && !brokenCovers.has(group.normKey) ? '点击放大查看高清封面' : undefined"
                 @mouseenter="group.coverUrl && !brokenCovers.has(group.normKey) && prefetchHighResCover(group.coverUrl)"
-                @touchstart.passive="group.coverUrl && !brokenCovers.has(group.normKey) && prefetchHighResCover(group.coverUrl)"
                 @click.stop="
                   group.coverUrl &&
                   !brokenCovers.has(group.normKey) &&

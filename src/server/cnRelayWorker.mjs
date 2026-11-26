@@ -31,6 +31,23 @@ function isAllowedLibraryHost(hostname) {
   )
 }
 
+function isAllowedCallerOrigin(originHeader) {
+  const origin = String(originHeader || '').trim().toLowerCase()
+  if (!origin) return true
+  try {
+    const h = new URL(origin).hostname.toLowerCase()
+    return (
+      h === 'localhost' ||
+      h === '127.0.0.1' ||
+      h === 'book.rouroulib.cn' ||
+      h.endsWith('.rouroulib.cn') ||
+      h.endsWith('.vercel.app')
+    )
+  } catch {
+    return false
+  }
+}
+
 function decompressBuffer(buf, encoding) {
   const enc = String(encoding || '').toLowerCase().trim()
   try {
@@ -159,6 +176,12 @@ const server = http.createServer((req, res) => {
   if (req.method !== 'POST') {
     res.statusCode = 405
     res.end(JSON.stringify({ relayError: true, errorCode: 'METHOD_NOT_ALLOWED', message: 'POST required' }))
+    return
+  }
+
+  if (!isAllowedCallerOrigin(req.headers.origin)) {
+    res.statusCode = 403
+    res.end(JSON.stringify({ relayError: true, errorCode: 'FORBIDDEN_ORIGIN', message: 'Origin not allowed' }))
     return
   }
 

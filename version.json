@@ -1,5 +1,5 @@
 {
-  "version": "1.0.2",
+  "version": "1.0.4",
   "updatedAt": "2026-11-26",
-  "description": "修复杭图无效备用域名 ENOTFOUND 覆盖真实超时错误与 getaddrinfo 脱敏误伤，新增 UPSTREAM_RELAY_URL 境内中转网关支持与超时快速失败机制"
+  "description": "启用浏览器端境内直连阿里云杭州函数，合并之江馆层架标与官方封面批量查询（减少60%调用次数）并移除移动端滑动高清预下载"
 }

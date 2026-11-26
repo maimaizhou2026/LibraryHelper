@@ -31,6 +31,7 @@ import {
   toThumbnailCoverUrl,
 } from '../utils/search'
 import { getLibraryAddressInfo, openLibraryLocationInMap } from '../utils/mapLink'
+import { apiFetch } from '../services/cnCatalogClient'
 import {
   encryptHzlibPasswordClient,
   encryptZjlibPasswordClient,
@@ -201,7 +202,7 @@ async function fetchLiveHoldingStatus() {
   holdingLoading.value = true
   holdingError.value = ''
   try {
-    const resp = await fetch('/api/holding/query', {
+    const resp = await apiFetch('/api/holding/query', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -257,7 +258,7 @@ async function handleOnlineRenew() {
           encryptedPassword = encryptHzlibPasswordClient(hzCred.password, renewCaptchaPem.value)
           loginSessionCookie = renewCaptchaCookie.value
         } else {
-          const initResp: any = await fetch('/api/hzlib/captcha?mode=init').then((r) =>
+          const initResp: any = await apiFetch('/api/hzlib/captcha?mode=init').then((r) =>
             parseJsonSafe(r)
           )
           if (initResp?.ok && initResp.pemKey && initResp.sessionCookie) {
@@ -268,7 +269,7 @@ async function handleOnlineRenew() {
       }
     }
 
-    const resp = await fetch('/api/loan/renew', {
+    const resp = await apiFetch('/api/loan/renew', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -396,7 +397,6 @@ function handleClose() {
               class="w-[104px] h-[142px] rounded-xl overflow-hidden shrink-0 border border-slate-200 shadow-md bg-gradient-to-br from-teal-700 to-slate-800 flex items-center justify-center text-white relative group cursor-zoom-in"
               title="点击查看全屏大图"
               @mouseenter="record.coverUrl && !imgLoadFailed && prefetchHighResCover(record.coverUrl)"
-              @touchstart.passive="record.coverUrl && !imgLoadFailed && prefetchHighResCover(record.coverUrl)"
               @click="openDrawerFullCover"
             >
               <img
@@ -536,7 +536,6 @@ function handleClose() {
             class="w-24 h-34 sm:w-28 sm:h-40 rounded-xl overflow-hidden shrink-0 border border-slate-200 shadow-sm bg-gradient-to-br from-teal-700 to-slate-800 flex items-center justify-center text-white relative group cursor-zoom-in"
             title="点击查看全屏大图"
             @mouseenter="record.coverUrl && !imgLoadFailed && prefetchHighResCover(record.coverUrl)"
-            @touchstart.passive="record.coverUrl && !imgLoadFailed && prefetchHighResCover(record.coverUrl)"
             @click="openDrawerFullCover"
           >
             <img

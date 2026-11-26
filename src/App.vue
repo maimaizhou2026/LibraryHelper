@@ -56,6 +56,7 @@ import {
   type SortOrder,
 } from './utils/search'
 import { ZJLIB_BRANCH_CONFIG, HZLIB_BRANCH_CONFIG } from './utils/mapLink'
+import { apiFetch } from './services/cnCatalogClient'
 import versionInfo from '../version.json'
 import { DEMO_BORROW_RECORDS } from './data/demoRecords'
 import SyncImportModal from './components/SyncImportModal.vue'
@@ -382,12 +383,12 @@ function toggleOnlineAutoGroup() {
 
 async function resolveOnlineItemsCovers(targetList: BorrowRecord[], currentSeq: number) {
   if (!targetList || targetList.length === 0) return
-  const batchSize = 6
+  const batchSize = 18
   for (let i = 0; i < targetList.length; i += batchSize) {
     if (currentSeq !== onlineSearchSeq) return
     const batch = targetList.slice(i, i + batchSize)
     try {
-      const coverRes = await fetch('/api/covers/resolve', {
+      const coverRes = await apiFetch('/api/covers/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -453,7 +454,7 @@ async function runOnlineCatalogSearch() {
   onlinePage.value = 1
   onlineHasMore.value = false
   try {
-    const resp = await fetch('/api/catalog/search', {
+    const resp = await apiFetch('/api/catalog/search', {
       method: 'POST',
       cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
@@ -551,7 +552,7 @@ async function loadMoreOnlineCatalog() {
   const nextPage = onlinePage.value + 1
   onlineLoadingMore.value = true
   try {
-    const resp = await fetch('/api/catalog/search', {
+    const resp = await apiFetch('/api/catalog/search', {
       method: 'POST',
       cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
@@ -721,12 +722,12 @@ async function resolveMissingBookCovers() {
   coverResolveTaskRunning = true
   resolvingCovers.value = true
   try {
-    const batchSize = 6
+    const batchSize = 18
     let resolvedCount = 0
     for (let i = 0; i < missing.length; i += batchSize) {
       const batch = missing.slice(i, i + batchSize)
       coverProgressText.value = `正在智能匹配图书封面 (${Math.min(i + batch.length, missing.length)}/${missing.length})...`
-      const resp = await fetch('/api/covers/resolve', {
+      const resp = await apiFetch('/api/covers/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -981,7 +982,7 @@ async function markCoverBroken(id: string) {
   const target = records.value.find((r) => r.id === id)
   if (!target) return
   try {
-    const resp = await fetch('/api/covers/resolve', {
+    const resp = await apiFetch('/api/covers/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1016,7 +1017,7 @@ async function markOnlineCoverBroken(id: string) {
   const target = onlineItems.value.find((r) => r.id === id)
   if (!target) return
   try {
-    const resp = await fetch('/api/covers/resolve', {
+    const resp = await apiFetch('/api/covers/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

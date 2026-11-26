@@ -25,6 +25,7 @@ import {
   matchesSelectedBranchOption,
   openLibraryLocationInMap,
 } from '../utils/mapLink'
+import { apiFetch } from '../services/cnCatalogClient'
 
 interface HoldingPanelState {
   expanded: boolean
@@ -212,7 +213,7 @@ async function fetchDetailHoldings(book: BorrowRecord, panel: HoldingPanelState)
   panel.loading = true
   panel.error = ''
   try {
-    const resp = await fetch('/api/holding/query', {
+    const resp = await apiFetch('/api/holding/query', {
       method: 'POST',
       cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
@@ -371,7 +372,6 @@ function getBorrowStatusBadge(book: BorrowRecord) {
             ]"
             :title="book.coverUrl && !brokenCovers[book.id] ? '点击全屏查看封面' : undefined"
             @mouseenter="book.coverUrl && !brokenCovers[book.id] && prefetchHighResCover(book.coverUrl)"
-            @touchstart.passive="book.coverUrl && !brokenCovers[book.id] && prefetchHighResCover(book.coverUrl)"
             @click="
               book.coverUrl &&
               !brokenCovers[book.id] &&

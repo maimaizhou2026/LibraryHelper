@@ -113,7 +113,6 @@ function handleCoverClick() {
           class="w-[106px] h-[146px] rounded-xl overflow-hidden shrink-0 border border-slate-200/90 bg-gradient-to-br from-teal-700 via-teal-800 to-slate-900 flex flex-col items-center justify-center text-white text-center shadow-md relative cursor-zoom-in"
           title="点击全屏查看封面"
           @mouseenter="record.coverUrl && !coverBroken && prefetchHighResCover(record.coverUrl)"
-          @touchstart.passive="record.coverUrl && !coverBroken && prefetchHighResCover(record.coverUrl)"
           @click.stop="handleCoverClick"
         >
           <img
@@ -289,7 +288,6 @@ function handleCoverClick() {
         class="w-22 h-30 rounded-xl overflow-hidden shrink-0 border border-slate-200/90 bg-gradient-to-br from-teal-700 via-teal-800 to-slate-900 flex flex-col items-center justify-center text-white text-center shadow-xs relative cursor-zoom-in"
         title="点击放大查看封面"
         @mouseenter="record.coverUrl && !coverBroken && prefetchHighResCover(record.coverUrl)"
-        @touchstart.passive="record.coverUrl && !coverBroken && prefetchHighResCover(record.coverUrl)"
         @click.stop="handleCoverClick"
       >
         <img
