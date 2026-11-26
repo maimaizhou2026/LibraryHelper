@@ -112,6 +112,165 @@ function isSafePublicHttpUrl(rawUrl: string): boolean {
   }
 }
 
+function getUpstreamRelayConfig(): { relayUrl: string; relaySecret: string } {
+  const relayUrl = String(process.env.UPSTREAM_RELAY_URL || '').trim()
+  const relaySecret = String(process.env.UPSTREAM_RELAY_SECRET || '').trim()
+  return { relayUrl, relaySecret }
+}
+
+function shouldRelayHostname(hostname: string): boolean {
+  const { relayUrl } = getUpstreamRelayConfig()
+  if (!relayUrl) return false
+  const h = (hostname || '').toLowerCase()
+  return h.endsWith('zjlib.cn') || h.endsWith('zjhzlib.cn') || h.endsWith('dataesb.com')
+}
+
+function relayNodeHttpRequest(
+  urlStr: string,
+  init?: {
+    method?: string
+    headers?: Record<string, any>
+    body?: string | Buffer
+    redirect?: 'follow' | 'manual'
+    timeoutMs?: number
+    relaxTls?: boolean
+  }
+): Promise<UpstreamResponse> {
+  return new Promise((resolve, reject) => {
+    const targetUrl = new URL(urlStr)
+    const { relayUrl, relaySecret } = getUpstreamRelayConfig()
+    const relayTarget = new URL(relayUrl)
+    const reqStartAt = Date.now()
+    const wrapUpstreamErr = (rawErr: any) => {
+      const errObj = rawErr instanceof Error ? rawErr : new Error(String(rawErr || 'Relay Error'))
+      return Object.assign(errObj, {
+        upstreamHost: targetUrl.hostname,
+        upstreamElapsedMs: Date.now() - reqStartAt,
+      })
+    }
+
+    const method = (init?.method || 'GET').toUpperCase()
+    const headers = buildBrowserHeaders(targetUrl, init?.headers)
+    const bodyBuf =
+      init?.body !== undefined
+        ? Buffer.isBuffer(init.body)
+          ? init.body
+          : Buffer.from(String(init.body), 'utf8')
+        : undefined
+
+    const payloadBuf = Buffer.from(
+      JSON.stringify({
+        url: urlStr,
+        method,
+        headers,
+        bodyBase64: bodyBuf ? bodyBuf.toString('base64') : '',
+        redirect: init?.redirect || 'follow',
+        timeoutMs: init?.timeoutMs || 8500,
+      }),
+      'utf8'
+    )
+
+    const isHttps = relayTarget.protocol === 'https:'
+    const reqFn = isHttps ? https.request : http.request
+    const relayHeaders: Record<string, string> = {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': String(payloadBuf.byteLength),
+      Accept: 'application/json',
+    }
+    if (relaySecret) {
+      relayHeaders['X-Relay-Secret'] = relaySecret
+    }
+
+    const req = reqFn(
+      relayTarget,
+      {
+        method: 'POST',
+        headers: relayHeaders,
+        family: 4,
+        timeout: (init?.timeoutMs || 8500) + 3000,
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
+        res.on('end', () => {
+          try {
+            const rawBuf = Buffer.concat(chunks)
+            const decodedRelayBuf = decompressBody(
+              rawBuf,
+              String(res.headers['content-encoding'] || '')
+            )
+            const relayJson = JSON.parse(decodedRelayBuf.toString('utf8') || '{}')
+            if (relayJson && relayJson.relayError) {
+              reject(
+                wrapUpstreamErr(
+                  Object.assign(new Error(String(relayJson.message || '中转请求上游失败')), {
+                    code: String(relayJson.errorCode || 'RELAY_UPSTREAM_ERR'),
+                  })
+                )
+              )
+              return
+            }
+            const status = Number(relayJson.status || res.statusCode || 200)
+            const setCookieList: string[] = Array.isArray(relayJson.setCookies)
+              ? relayJson.setCookies.map((c: any) => String(c))
+              : []
+            const lowerHeaders: Record<string, string> = {}
+            if (relayJson.headers && typeof relayJson.headers === 'object') {
+              for (const [hk, hv] of Object.entries(relayJson.headers)) {
+                if (hv !== undefined && hv !== null) {
+                  lowerHeaders[hk.toLowerCase()] = String(hv)
+                }
+              }
+            }
+            const decodedBuf = Buffer.from(String(relayJson.bodyBase64 || ''), 'base64')
+            resolve({
+              ok: status >= 200 && status < 300,
+              status,
+              headers: {
+                get(name: string) {
+                  return lowerHeaders[name.toLowerCase()] ?? null
+                },
+                getSetCookie() {
+                  return setCookieList
+                },
+              },
+              async text() {
+                return decodedBuf.toString('utf8')
+              },
+              async json() {
+                const txt = decodedBuf.toString('utf8')
+                return txt ? JSON.parse(txt) : {}
+              },
+              async arrayBuffer() {
+                return decodedBuf.buffer.slice(
+                  decodedBuf.byteOffset,
+                  decodedBuf.byteOffset + decodedBuf.byteLength
+                ) as ArrayBuffer
+              },
+            })
+          } catch (parseErr) {
+            reject(wrapUpstreamErr(parseErr))
+          }
+        })
+        res.on('error', (e) => reject(wrapUpstreamErr(e)))
+      }
+    )
+
+    req.on('timeout', () => {
+      req.destroy(
+        wrapUpstreamErr(
+          Object.assign(new Error(`连接境内中转网关超时 (${relayTarget.hostname})`), {
+            code: 'ETIMEDOUT',
+          })
+        )
+      )
+    })
+    req.on('error', (e) => reject(wrapUpstreamErr(e)))
+    req.write(payloadBuf)
+    req.end()
+  })
+}
+
 function singleNodeHttpRequest(
   urlStr: string,
   init?: {
@@ -126,6 +285,10 @@ function singleNodeHttpRequest(
 ): Promise<UpstreamResponse> {
   return new Promise((resolve, reject) => {
     const targetUrl = new URL(urlStr)
+    if (redirectCount === 0 && shouldRelayHostname(targetUrl.hostname)) {
+      relayNodeHttpRequest(urlStr, init).then(resolve).catch(reject)
+      return
+    }
     const reqStartAt = Date.now()
     const wrapUpstreamErr = (rawErr: any) => {
       const errObj = rawErr instanceof Error ? rawErr : new Error(String(rawErr || 'Upstream Error'))
@@ -156,7 +319,7 @@ function singleNodeHttpRequest(
         headers,
         family: 4,
         rejectUnauthorized: !allowRelaxedTls,
-        timeout: init?.timeoutMs || 15000,
+        timeout: init?.timeoutMs || 8500,
       },
       (res) => {
         const status = res.statusCode || 200
@@ -252,8 +415,8 @@ function singleNodeHttpRequest(
 /**
  * 统一高可用上游请求封装：
  * 1. 使用 Node 原生 https/http（强制 IPv4 + 兼容政务云 SSL 证书链 + 完整浏览器仿真请求头）
- * 2. 自动重试（最多 2 次）
- * 3. 杭州图书馆双域名自动故障切换（my1.zjhzlib.cn <-> opac.zjhzlib.cn）
+ * 2. 支持通过 UPSTREAM_RELAY_URL 境内中转网关突破浙图/杭图境外 IP 防火墙封锁
+ * 3. 针对瞬时连接重置或证书异常自动重试，针对黑洞超时 (ETIMEDOUT) 或域名不存在 (ENOTFOUND) 快速失败
  */
 async function upstreamFetch(
   urlInput: string | URL,
@@ -266,31 +429,27 @@ async function upstreamFetch(
   }
 ): Promise<UpstreamResponse> {
   const primaryUrl = String(urlInput)
-  const candidateUrls = [primaryUrl]
-  if (primaryUrl.includes('://my1.zjhzlib.cn/')) {
-    candidateUrls.push(primaryUrl.replace('://my1.zjhzlib.cn/', '://opac.zjhzlib.cn/'))
-  } else if (primaryUrl.includes('://opac.zjhzlib.cn/')) {
-    candidateUrls.push(primaryUrl.replace('://opac.zjhzlib.cn/', '://my1.zjhzlib.cn/'))
-  }
-
   let lastError: any = null
-  for (const candidateUrl of candidateUrls) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const isCertErr =
-          lastError &&
-          /CERT|UNABLE_TO_VERIFY|SELF_SIGNED|TLS/i.test(
-            String(lastError?.code || lastError?.message || '')
-          )
-        return await singleNodeHttpRequest(candidateUrl, {
-          ...init,
-          relaxTls: attempt > 0 && isCertErr,
-        })
-      } catch (err: any) {
-        lastError = err
-        if (attempt === 0) {
-          await new Promise((r) => setTimeout(r, 250))
-        }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const isCertErr =
+        lastError &&
+        /CERT|UNABLE_TO_VERIFY|SELF_SIGNED|TLS/i.test(
+          String(lastError?.code || lastError?.message || '')
+        )
+      return await singleNodeHttpRequest(primaryUrl, {
+        ...init,
+        relaxTls: attempt > 0 && isCertErr,
+      })
+    } catch (err: any) {
+      lastError = err
+      const errCode = String(err?.code || err?.cause?.code || '')
+      // 遭遇防火墙黑洞超时 (ETIMEDOUT) 或 DNS 不存在 (ENOTFOUND) 时立即快速失败，避免双倍等待
+      if (errCode === 'ETIMEDOUT' || errCode === 'UND_ERR_CONNECT_TIMEOUT' || errCode === 'ENOTFOUND') {
+        break
+      }
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 200))
       }
     }
   }
@@ -320,9 +479,9 @@ function sanitizeDiagnosticText(raw: string): string {
   return String(raw)
     .replace(/(JSESSIONID|token|password|rdPasswd|rdLoginId|account|cookie)\s*[=:]\s*[^\s;&,]+/gi, '$1=[REDACTED]')
     .replace(/\b[A-Za-z0-9+/=_.-]{8,}\b/g, (token) => {
-      // 保留常见错误码与已知公共图书馆域名
+      // 保留常见错误码、系统网络诊断词与已知公共图书馆域名
       if (
-        /^(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|NETWORK_ERROR|TIMEOUT|HTTP_\d+)$/i.test(
+        /^(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|NETWORK_ERROR|TIMEOUT|HTTP_\d+|getaddrinfo|certificate|connected|connection|aborted|timedout)$/i.test(
           token
         ) ||
         /^(www\.zjlib\.cn|my1\.zjhzlib\.cn|opac\.zjhzlib\.cn|book-resource\.dataesb\.com|map\.baidu\.com|image\.baidu\.com)$/i.test(
@@ -355,7 +514,15 @@ function formatUpstreamError(err: any, fallbackTitle: string, req?: any, route?:
 
   let userMessage = ''
   if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT' || rawMsg.includes('超时')) {
-    userMessage = `${fallbackTitle}：连接图书馆官方服务器超时${detailSuffix || ' (TIMEOUT)'}，请稍后重试 ${diagTag}`
+    const isOverseasVercel = Boolean(process.env.VERCEL || process.env.VERCEL_REGION)
+    const isLibraryUpstream =
+      upstreamHost.endsWith('zjlib.cn') || upstreamHost.endsWith('zjhzlib.cn')
+    const hasRelay = Boolean(getUpstreamRelayConfig().relayUrl)
+    if (isOverseasVercel && isLibraryUpstream && !hasRelay) {
+      userMessage = `${fallbackTitle}：浙图/杭图官方防火墙屏蔽了境外云机房访问${detailSuffix}，请配置境内中转网关 (UPSTREAM_RELAY_URL) 或使用「本地导入/导出」 ${diagTag}`
+    } else {
+      userMessage = `${fallbackTitle}：连接图书馆官方服务器超时${detailSuffix || ' (TIMEOUT)'}，请稍后重试 ${diagTag}`
+    }
   } else if (code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'EPIPE') {
     userMessage = `${fallbackTitle}：图书馆服务器重置了连接${detailSuffix}，请稍后重试 ${diagTag}`
   } else if (rawMsg === 'fetch failed') {
@@ -1734,9 +1901,16 @@ export function registerLibraryApiMiddlewares(rawServer: {
         let upstreams: any = undefined
         if (probe) {
           const targets = [
-            { name: 'zjlib_bff', url: 'https://www.zjlib.cn/bff-api' },
-            { name: 'hzlib_primary', url: 'https://my1.zjhzlib.cn/opac/reader/login' },
-            { name: 'hzlib_backup', url: 'https://opac.zjhzlib.cn/opac/reader/login' },
+            {
+              name: 'zjlib_bff',
+              url: 'https://www.zjlib.cn/bff-api/reader-sso-service/portal-pc-api/login/wechat-qr',
+              headers: { 'BFF-ORG-ID': ZJLIB_ORG_ID },
+            },
+            { name: 'hzlib_opac', url: 'https://my1.zjhzlib.cn/opac/reader/login' },
+            {
+              name: 'dataesb_cover',
+              url: 'https://book-resource.dataesb.com/websearch/metares?glc=P1ZJ0571001&cmdACT=getImages&type=0&isbns=9787020002207&callback=cb',
+            },
           ]
           upstreams = await Promise.all(
             targets.map(async (t) => {
@@ -1744,6 +1918,7 @@ export function registerLibraryApiMiddlewares(rawServer: {
               try {
                 const r = await singleNodeHttpRequest(t.url, {
                   method: 'GET',
+                  headers: (t as any).headers,
                   redirect: 'manual',
                   timeoutMs: 6000,
                 })
@@ -1773,6 +1948,7 @@ export function registerLibraryApiMiddlewares(rawServer: {
             status: 'healthy',
             version: versionInfo.version,
             region: process.env.VERCEL_REGION || 'local',
+            relayConfigured: Boolean(getUpstreamRelayConfig().relayUrl),
             timestamp: new Date().toISOString(),
             recentErrorCount: recentDiagnosticErrors.length,
             ...(probe ? { upstreams, recentErrors: recentDiagnosticErrors } : {}),

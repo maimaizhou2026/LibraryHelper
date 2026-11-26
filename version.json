@@ -1,5 +1,5 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "updatedAt": "2026-11-26",
-  "description": "在线搜索「自动归类」开关默认改为关闭（默认按图书馆官方接口返回原始顺序展示，支持手动开启同系列卷号归类）"
+  "description": "修复杭图无效备用域名 ENOTFOUND 覆盖真实超时错误与 getaddrinfo 脱敏误伤，新增 UPSTREAM_RELAY_URL 境内中转网关支持与超时快速失败机制"
 }

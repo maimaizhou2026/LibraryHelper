@@ -84,3 +84,4 @@
   3. **基于客户端 IP 的滑动窗口限流**：认证/同步/续借/验证码类接口限制单 IP **25 次/分钟**，检索/馆藏/封面类接口限制单 IP **80 次/分钟**（超限返回 `429`）；
   4. **封面缓存并发原子写与 SSRF 防护**：`coverMemoryCache` 采用无原型对象（防原型链污染）并限制最大 **3000 条** 容量，写入 `.cover-cache.json` 采用异步串行锁 + `.tmp` 原子替换；上游 TLS 证书仅对特定旧系统域名放宽，并对封面 URL 实施公网 `http(s)` 与内网 IP 黑名单过滤；
   5. **零敏感信息脱敏诊断日志与 `/api/health?probe=1` 上游连通探测**：每个请求生成 `reqId`（`X-Request-Id`），异常经 `sanitizeDiagnosticText` 严格剥离任何凭证/证号/Token/长串字符后写入最近 30 条内存环形缓冲区与 `console.error`，支持通过 `/api/health?probe=1` 实时探测浙图/杭图双域名延迟与查看最近脱敏错误列表；公开无状态检索/馆藏查询启用 **45 秒** 微缓存。
+  6. **跨境地域防火墙中转网关支持（`UPSTREAM_RELAY_URL` + `src/server/cnRelayWorker.mjs`）**：由于浙图（`www.zjlib.cn`）与杭图（`my1.zjhzlib.cn`）政务云防火墙屏蔽境外及香港云机房 IP（如 Vercel `hkg1`），服务端内置 `UPSTREAM_RELAY_URL`（及 `UPSTREAM_RELAY_SECRET`）环境变量支持，并提供零依赖单文件国内云函数转发脚本 `src/server/cnRelayWorker.mjs`（可免费部署于阿里云函数计算 FC 杭州节点或腾讯云 SCF）；同时对 `ETIMEDOUT` / `ENOTFOUND` 实施快速失败（Fail-Fast），移除已失效的 `opac.zjhzlib.cn` 备用域名，避免无效重试与错误掩盖。

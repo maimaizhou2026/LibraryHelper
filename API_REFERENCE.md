@@ -216,7 +216,7 @@
 
 ## 三、杭州图书馆（HZLib）上游官方接口文档
 
-- **OPAC 基准地址**：`https://my1.zjhzlib.cn/opac`（外网镜像同源：`https://opac.zjhzlib.cn/opac`）
+- **OPAC 基准地址**：`https://my1.zjhzlib.cn/opac`
 - **会话机制**：基于标准 Servlet `JSESSIONID` Cookie。
 
 | 序号 | 接口用途 | 方法与路径 | 关键请求参数 / 解析说明 |

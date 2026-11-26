@@ -48678,9 +48678,9 @@ var import_sm_crypto = __toESM(require_src(), 1);
 
 // version.json
 var version_default = {
-  version: "1.1.3",
+  version: "1.0.2",
   updatedAt: "2026-11-26",
-  description: "\u5728\u7EBF\u641C\u7D22\u300C\u81EA\u52A8\u5F52\u7C7B\u300D\u5F00\u5173\u9ED8\u8BA4\u6539\u4E3A\u5173\u95ED\uFF08\u9ED8\u8BA4\u6309\u56FE\u4E66\u9986\u5B98\u65B9\u63A5\u53E3\u8FD4\u56DE\u539F\u59CB\u987A\u5E8F\u5C55\u793A\uFF0C\u652F\u6301\u624B\u52A8\u5F00\u542F\u540C\u7CFB\u5217\u5377\u53F7\u5F52\u7C7B\uFF09"
+  description: "\u4FEE\u590D\u676D\u56FE\u65E0\u6548\u5907\u7528\u57DF\u540D ENOTFOUND \u8986\u76D6\u771F\u5B9E\u8D85\u65F6\u9519\u8BEF\u4E0E getaddrinfo \u8131\u654F\u8BEF\u4F24\uFF0C\u65B0\u589E UPSTREAM_RELAY_URL \u5883\u5185\u4E2D\u8F6C\u7F51\u5173\u652F\u6301\u4E0E\u8D85\u65F6\u5FEB\u901F\u5931\u8D25\u673A\u5236"
 };
 
 // addr/zjlib_branches.json
@@ -49611,9 +49611,147 @@ function isSafePublicHttpUrl(rawUrl) {
     return false;
   }
 }
+function getUpstreamRelayConfig() {
+  const relayUrl = String(process.env.UPSTREAM_RELAY_URL || "").trim();
+  const relaySecret = String(process.env.UPSTREAM_RELAY_SECRET || "").trim();
+  return { relayUrl, relaySecret };
+}
+function shouldRelayHostname(hostname) {
+  const { relayUrl } = getUpstreamRelayConfig();
+  if (!relayUrl) return false;
+  const h = (hostname || "").toLowerCase();
+  return h.endsWith("zjlib.cn") || h.endsWith("zjhzlib.cn") || h.endsWith("dataesb.com");
+}
+function relayNodeHttpRequest(urlStr, init) {
+  return new Promise((resolve, reject) => {
+    const targetUrl = new URL(urlStr);
+    const { relayUrl, relaySecret } = getUpstreamRelayConfig();
+    const relayTarget = new URL(relayUrl);
+    const reqStartAt = Date.now();
+    const wrapUpstreamErr = (rawErr) => {
+      const errObj = rawErr instanceof Error ? rawErr : new Error(String(rawErr || "Relay Error"));
+      return Object.assign(errObj, {
+        upstreamHost: targetUrl.hostname,
+        upstreamElapsedMs: Date.now() - reqStartAt
+      });
+    };
+    const method = (init?.method || "GET").toUpperCase();
+    const headers = buildBrowserHeaders(targetUrl, init?.headers);
+    const bodyBuf = init?.body !== void 0 ? Buffer.isBuffer(init.body) ? init.body : Buffer.from(String(init.body), "utf8") : void 0;
+    const payloadBuf = Buffer.from(
+      JSON.stringify({
+        url: urlStr,
+        method,
+        headers,
+        bodyBase64: bodyBuf ? bodyBuf.toString("base64") : "",
+        redirect: init?.redirect || "follow",
+        timeoutMs: init?.timeoutMs || 8500
+      }),
+      "utf8"
+    );
+    const isHttps = relayTarget.protocol === "https:";
+    const reqFn = isHttps ? https.request : http.request;
+    const relayHeaders = {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Length": String(payloadBuf.byteLength),
+      Accept: "application/json"
+    };
+    if (relaySecret) {
+      relayHeaders["X-Relay-Secret"] = relaySecret;
+    }
+    const req = reqFn(
+      relayTarget,
+      {
+        method: "POST",
+        headers: relayHeaders,
+        family: 4,
+        timeout: (init?.timeoutMs || 8500) + 3e3
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => {
+          try {
+            const rawBuf = Buffer.concat(chunks);
+            const decodedRelayBuf = decompressBody(
+              rawBuf,
+              String(res.headers["content-encoding"] || "")
+            );
+            const relayJson = JSON.parse(decodedRelayBuf.toString("utf8") || "{}");
+            if (relayJson && relayJson.relayError) {
+              reject(
+                wrapUpstreamErr(
+                  Object.assign(new Error(String(relayJson.message || "\u4E2D\u8F6C\u8BF7\u6C42\u4E0A\u6E38\u5931\u8D25")), {
+                    code: String(relayJson.errorCode || "RELAY_UPSTREAM_ERR")
+                  })
+                )
+              );
+              return;
+            }
+            const status = Number(relayJson.status || res.statusCode || 200);
+            const setCookieList = Array.isArray(relayJson.setCookies) ? relayJson.setCookies.map((c) => String(c)) : [];
+            const lowerHeaders = {};
+            if (relayJson.headers && typeof relayJson.headers === "object") {
+              for (const [hk, hv] of Object.entries(relayJson.headers)) {
+                if (hv !== void 0 && hv !== null) {
+                  lowerHeaders[hk.toLowerCase()] = String(hv);
+                }
+              }
+            }
+            const decodedBuf = Buffer.from(String(relayJson.bodyBase64 || ""), "base64");
+            resolve({
+              ok: status >= 200 && status < 300,
+              status,
+              headers: {
+                get(name) {
+                  return lowerHeaders[name.toLowerCase()] ?? null;
+                },
+                getSetCookie() {
+                  return setCookieList;
+                }
+              },
+              async text() {
+                return decodedBuf.toString("utf8");
+              },
+              async json() {
+                const txt = decodedBuf.toString("utf8");
+                return txt ? JSON.parse(txt) : {};
+              },
+              async arrayBuffer() {
+                return decodedBuf.buffer.slice(
+                  decodedBuf.byteOffset,
+                  decodedBuf.byteOffset + decodedBuf.byteLength
+                );
+              }
+            });
+          } catch (parseErr) {
+            reject(wrapUpstreamErr(parseErr));
+          }
+        });
+        res.on("error", (e) => reject(wrapUpstreamErr(e)));
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy(
+        wrapUpstreamErr(
+          Object.assign(new Error(`\u8FDE\u63A5\u5883\u5185\u4E2D\u8F6C\u7F51\u5173\u8D85\u65F6 (${relayTarget.hostname})`), {
+            code: "ETIMEDOUT"
+          })
+        )
+      );
+    });
+    req.on("error", (e) => reject(wrapUpstreamErr(e)));
+    req.write(payloadBuf);
+    req.end();
+  });
+}
 function singleNodeHttpRequest(urlStr, init, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     const targetUrl = new URL(urlStr);
+    if (redirectCount === 0 && shouldRelayHostname(targetUrl.hostname)) {
+      relayNodeHttpRequest(urlStr, init).then(resolve).catch(reject);
+      return;
+    }
     const reqStartAt = Date.now();
     const wrapUpstreamErr = (rawErr) => {
       const errObj = rawErr instanceof Error ? rawErr : new Error(String(rawErr || "Upstream Error"));
@@ -49638,7 +49776,7 @@ function singleNodeHttpRequest(urlStr, init, redirectCount = 0) {
         headers,
         family: 4,
         rejectUnauthorized: !allowRelaxedTls,
-        timeout: init?.timeoutMs || 15e3
+        timeout: init?.timeoutMs || 8500
       },
       (res) => {
         const status = res.statusCode || 200;
@@ -49717,28 +49855,24 @@ function singleNodeHttpRequest(urlStr, init, redirectCount = 0) {
 }
 async function upstreamFetch(urlInput, init) {
   const primaryUrl = String(urlInput);
-  const candidateUrls = [primaryUrl];
-  if (primaryUrl.includes("://my1.zjhzlib.cn/")) {
-    candidateUrls.push(primaryUrl.replace("://my1.zjhzlib.cn/", "://opac.zjhzlib.cn/"));
-  } else if (primaryUrl.includes("://opac.zjhzlib.cn/")) {
-    candidateUrls.push(primaryUrl.replace("://opac.zjhzlib.cn/", "://my1.zjhzlib.cn/"));
-  }
   let lastError = null;
-  for (const candidateUrl of candidateUrls) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const isCertErr = lastError && /CERT|UNABLE_TO_VERIFY|SELF_SIGNED|TLS/i.test(
-          String(lastError?.code || lastError?.message || "")
-        );
-        return await singleNodeHttpRequest(candidateUrl, {
-          ...init,
-          relaxTls: attempt > 0 && isCertErr
-        });
-      } catch (err) {
-        lastError = err;
-        if (attempt === 0) {
-          await new Promise((r) => setTimeout(r, 250));
-        }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const isCertErr = lastError && /CERT|UNABLE_TO_VERIFY|SELF_SIGNED|TLS/i.test(
+        String(lastError?.code || lastError?.message || "")
+      );
+      return await singleNodeHttpRequest(primaryUrl, {
+        ...init,
+        relaxTls: attempt > 0 && isCertErr
+      });
+    } catch (err) {
+      lastError = err;
+      const errCode = String(err?.code || err?.cause?.code || "");
+      if (errCode === "ETIMEDOUT" || errCode === "UND_ERR_CONNECT_TIMEOUT" || errCode === "ENOTFOUND") {
+        break;
+      }
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 200));
       }
     }
   }
@@ -49749,7 +49883,7 @@ var recentDiagnosticErrors = [];
 function sanitizeDiagnosticText(raw) {
   if (!raw) return "";
   return String(raw).replace(/(JSESSIONID|token|password|rdPasswd|rdLoginId|account|cookie)\s*[=:]\s*[^\s;&,]+/gi, "$1=[REDACTED]").replace(/\b[A-Za-z0-9+/=_.-]{8,}\b/g, (token) => {
-    if (/^(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|NETWORK_ERROR|TIMEOUT|HTTP_\d+)$/i.test(
+    if (/^(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|NETWORK_ERROR|TIMEOUT|HTTP_\d+|getaddrinfo|certificate|connected|connection|aborted|timedout)$/i.test(
       token
     ) || /^(www\.zjlib\.cn|my1\.zjhzlib\.cn|opac\.zjhzlib\.cn|book-resource\.dataesb\.com|map\.baidu\.com|image\.baidu\.com)$/i.test(
       token
@@ -49776,7 +49910,14 @@ function formatUpstreamError(err, fallbackTitle, req, route) {
   const diagTag = `[v${version_default.version} \xB7 ${region}#${reqId}]`;
   let userMessage = "";
   if (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT" || rawMsg.includes("\u8D85\u65F6")) {
-    userMessage = `${fallbackTitle}\uFF1A\u8FDE\u63A5\u56FE\u4E66\u9986\u5B98\u65B9\u670D\u52A1\u5668\u8D85\u65F6${detailSuffix || " (TIMEOUT)"}\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5 ${diagTag}`;
+    const isOverseasVercel = Boolean(process.env.VERCEL || process.env.VERCEL_REGION);
+    const isLibraryUpstream = upstreamHost.endsWith("zjlib.cn") || upstreamHost.endsWith("zjhzlib.cn");
+    const hasRelay = Boolean(getUpstreamRelayConfig().relayUrl);
+    if (isOverseasVercel && isLibraryUpstream && !hasRelay) {
+      userMessage = `${fallbackTitle}\uFF1A\u6D59\u56FE/\u676D\u56FE\u5B98\u65B9\u9632\u706B\u5899\u5C4F\u853D\u4E86\u5883\u5916\u4E91\u673A\u623F\u8BBF\u95EE${detailSuffix}\uFF0C\u8BF7\u914D\u7F6E\u5883\u5185\u4E2D\u8F6C\u7F51\u5173 (UPSTREAM_RELAY_URL) \u6216\u4F7F\u7528\u300C\u672C\u5730\u5BFC\u5165/\u5BFC\u51FA\u300D ${diagTag}`;
+    } else {
+      userMessage = `${fallbackTitle}\uFF1A\u8FDE\u63A5\u56FE\u4E66\u9986\u5B98\u65B9\u670D\u52A1\u5668\u8D85\u65F6${detailSuffix || " (TIMEOUT)"}\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5 ${diagTag}`;
+    }
   } else if (code === "ECONNRESET" || code === "ECONNREFUSED" || code === "EPIPE") {
     userMessage = `${fallbackTitle}\uFF1A\u56FE\u4E66\u9986\u670D\u52A1\u5668\u91CD\u7F6E\u4E86\u8FDE\u63A5${detailSuffix}\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5 ${diagTag}`;
   } else if (rawMsg === "fetch failed") {
@@ -50865,9 +51006,16 @@ function registerLibraryApiMiddlewares(rawServer) {
     let upstreams = void 0;
     if (probe) {
       const targets = [
-        { name: "zjlib_bff", url: "https://www.zjlib.cn/bff-api" },
-        { name: "hzlib_primary", url: "https://my1.zjhzlib.cn/opac/reader/login" },
-        { name: "hzlib_backup", url: "https://opac.zjhzlib.cn/opac/reader/login" }
+        {
+          name: "zjlib_bff",
+          url: "https://www.zjlib.cn/bff-api/reader-sso-service/portal-pc-api/login/wechat-qr",
+          headers: { "BFF-ORG-ID": ZJLIB_ORG_ID }
+        },
+        { name: "hzlib_opac", url: "https://my1.zjhzlib.cn/opac/reader/login" },
+        {
+          name: "dataesb_cover",
+          url: "https://book-resource.dataesb.com/websearch/metares?glc=P1ZJ0571001&cmdACT=getImages&type=0&isbns=9787020002207&callback=cb"
+        }
       ];
       upstreams = await Promise.all(
         targets.map(async (t) => {
@@ -50875,6 +51023,7 @@ function registerLibraryApiMiddlewares(rawServer) {
           try {
             const r = await singleNodeHttpRequest(t.url, {
               method: "GET",
+              headers: t.headers,
               redirect: "manual",
               timeoutMs: 6e3
             });
@@ -50904,6 +51053,7 @@ function registerLibraryApiMiddlewares(rawServer) {
         status: "healthy",
         version: version_default.version,
         region: process.env.VERCEL_REGION || "local",
+        relayConfigured: Boolean(getUpstreamRelayConfig().relayUrl),
         timestamp: (/* @__PURE__ */ new Date()).toISOString(),
         recentErrorCount: recentDiagnosticErrors.length,
         ...probe ? { upstreams, recentErrors: recentDiagnosticErrors } : {}
