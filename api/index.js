@@ -44245,7 +44245,7 @@ var OpenElementStack = class {
   get currentTmplContentOrNode() {
     return this._isInTemplate() ? this.treeAdapter.getTemplateContent(this.current) : this.current;
   }
-  constructor(document, treeAdapter, handler2) {
+  constructor(document2, treeAdapter, handler2) {
     this.treeAdapter = treeAdapter;
     this.handler = handler2;
     this.items = [];
@@ -44253,7 +44253,7 @@ var OpenElementStack = class {
     this.stackTop = -1;
     this.tmplCount = 0;
     this.currentTagId = TAG_ID.UNKNOWN;
-    this.current = document;
+    this.current = document2;
   }
   //Index of element
   _indexOf(element) {
@@ -44687,8 +44687,8 @@ var defaultTreeAdapter = {
   getTemplateContent(templateElement) {
     return templateElement.content;
   },
-  setDocumentType(document, name, publicId, systemId) {
-    const doctypeNode = document.childNodes.find((node) => node.nodeName === "#documentType");
+  setDocumentType(document2, name, publicId, systemId) {
+    const doctypeNode = document2.childNodes.find((node) => node.nodeName === "#documentType");
     if (doctypeNode) {
       doctypeNode.name = name;
       doctypeNode.publicId = publicId;
@@ -44701,14 +44701,14 @@ var defaultTreeAdapter = {
         systemId,
         parentNode: null
       };
-      defaultTreeAdapter.appendChild(document, node);
+      defaultTreeAdapter.appendChild(document2, node);
     }
   },
-  setDocumentMode(document, mode) {
-    document.mode = mode;
+  setDocumentMode(document2, mode) {
+    document2.mode = mode;
   },
-  getDocumentMode(document) {
-    return document.mode;
+  getDocumentMode(document2) {
+    return document2.mode;
   },
   detachNode(node) {
     if (node.parentNode) {
@@ -45178,7 +45178,7 @@ var defaultParserOptions = {
   onParseError: null
 };
 var Parser2 = class {
-  constructor(options, document, fragmentContext = null, scriptHandler = null) {
+  constructor(options, document2, fragmentContext = null, scriptHandler = null) {
     this.fragmentContext = fragmentContext;
     this.scriptHandler = scriptHandler;
     this.currentToken = null;
@@ -45203,7 +45203,7 @@ var Parser2 = class {
     if (this.onParseError) {
       this.options.sourceCodeLocationInfo = true;
     }
-    this.document = document !== null && document !== void 0 ? document : this.treeAdapter.createDocument();
+    this.document = document2 !== null && document2 !== void 0 ? document2 : this.treeAdapter.createDocument();
     this.tokenizer = new Tokenizer2(this.options, this);
     this.activeFormattingElements = new FormattingElementList(this.treeAdapter);
     this.fragmentContextID = fragmentContext ? getTagID(this.treeAdapter.getTagName(fragmentContext)) : TAG_ID.UNKNOWN;
@@ -48396,24 +48396,24 @@ var adapter = {
   getTemplateContent(templateElement) {
     return templateElement.children[0];
   },
-  setDocumentType(document, name, publicId, systemId) {
+  setDocumentType(document2, name, publicId, systemId) {
     const data2 = serializeDoctypeContent(name, publicId, systemId);
-    let doctypeNode = document.children.find((node) => isDirective(node) && node.name === "!doctype");
+    let doctypeNode = document2.children.find((node) => isDirective(node) && node.name === "!doctype");
     if (doctypeNode) {
       doctypeNode.data = data2 !== null && data2 !== void 0 ? data2 : null;
     } else {
       doctypeNode = new ProcessingInstruction("!doctype", data2);
-      adapter.appendChild(document, doctypeNode);
+      adapter.appendChild(document2, doctypeNode);
     }
     doctypeNode["x-name"] = name;
     doctypeNode["x-publicId"] = publicId;
     doctypeNode["x-systemId"] = systemId;
   },
-  setDocumentMode(document, mode) {
-    document["x-mode"] = mode;
+  setDocumentMode(document2, mode) {
+    document2["x-mode"] = mode;
   },
-  getDocumentMode(document) {
-    return document["x-mode"];
+  getDocumentMode(document2) {
+    return document2["x-mode"];
   },
   detachNode(node) {
     if (node.parent) {
@@ -48678,9 +48678,9 @@ var import_sm_crypto = __toESM(require_src(), 1);
 
 // version.json
 var version_default = {
-  version: "1.0.4",
+  version: "1.0.6",
   updatedAt: "2026-11-26",
-  description: "\u542F\u7528\u6D4F\u89C8\u5668\u7AEF\u5883\u5185\u76F4\u8FDE\u963F\u91CC\u4E91\u676D\u5DDE\u51FD\u6570\uFF0C\u5408\u5E76\u4E4B\u6C5F\u9986\u5C42\u67B6\u6807\u4E0E\u5B98\u65B9\u5C01\u9762\u6279\u91CF\u67E5\u8BE2\uFF08\u51CF\u5C1160%\u8C03\u7528\u6B21\u6570\uFF09\u5E76\u79FB\u9664\u79FB\u52A8\u7AEF\u6ED1\u52A8\u9AD8\u6E05\u9884\u4E0B\u8F7D"
+  description: "\u672C\u5730\u641C\u7D22\u65B0\u589E 1 \u79D2\u505C\u987F\u9632\u6296\u89E6\u53D1\u4E0E\u5C01\u9762\u300C\u5148\u5FEB\u540E\u5927\uFF08\u524D4+\u540E12\uFF09\u300D\u62A2\u5360\u5F0F\u5206\u6279\u52A0\u8F7D\uFF0C\u5728\u7EBF\u641C\u7D22\u6539\u4E3A\u6309\u56DE\u8F66\u6216\u70B9\u51FB\u6309\u94AE\u624B\u52A8\u89E6\u53D1"
 };
 
 // addr/zjlib_branches.json

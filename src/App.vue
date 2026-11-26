@@ -55,7 +55,16 @@ import {
   type SortField,
   type SortOrder,
 } from './utils/search'
-import { ZJLIB_BRANCH_CONFIG, HZLIB_BRANCH_CONFIG } from './utils/mapLink'
+import {
+  ZJLIB_BRANCH_CONFIG,
+  HZLIB_BRANCH_CONFIG,
+  registerMobileMapPicker,
+  getPreferredMapProvider,
+  setPreferredMapProvider,
+  type MapLocationTarget,
+  type LibraryPoiInfo,
+  type MapProviderOption,
+} from './utils/mapLink'
 import { apiFetch } from './services/cnCatalogClient'
 import versionInfo from '../version.json'
 import { DEMO_BORROW_RECORDS } from './data/demoRecords'
@@ -84,6 +93,21 @@ const autoDedupByTitle = ref(true)
 const showSyncModal = ref(false)
 const showDedupModal = ref(false)
 const showLogoutConfirm = ref(false)
+const mobileMapPickerState = ref<{
+  target: MapLocationTarget
+  info: LibraryPoiInfo
+  options: MapProviderOption[]
+} | null>(null)
+const rememberMapChoice = ref(false)
+
+function handleSelectMapProvider(opt: MapProviderOption) {
+  if (rememberMapChoice.value) {
+    setPreferredMapProvider(opt.id)
+  } else {
+    setPreferredMapProvider(null)
+  }
+  mobileMapPickerState.value = null
+}
 const activeRecord = ref<BorrowRecord | null>(null)
 const fullscreenCoverRecord = ref<{
   id?: string
@@ -122,6 +146,7 @@ const SEARCH_MODE_SESSION_KEY = 'lh_search_mode_v1'
 const ONLINE_BRANCH_SESSION_KEY = 'lh_online_branch_v1'
 const ONLINE_AVAIL_SESSION_KEY = 'lh_online_avail_v1'
 const ONLINE_AUTO_GROUP_SESSION_KEY = 'lh_online_auto_group_v2'
+const localSearchInput = ref('')
 const localSearchQuery = ref('')
 const onlineSearchQuery = ref('')
 const searchMode = ref<'local' | 'online'>(
@@ -130,12 +155,12 @@ const searchMode = ref<'local' | 'online'>(
     'local'
 )
 const activeSearchQuery = computed({
-  get: () => (searchMode.value === 'online' ? onlineSearchQuery.value : localSearchQuery.value),
+  get: () => (searchMode.value === 'online' ? onlineSearchQuery.value : localSearchInput.value),
   set: (val: string) => {
     if (searchMode.value === 'online') {
       onlineSearchQuery.value = val
     } else {
-      localSearchQuery.value = val
+      localSearchInput.value = val
     }
   },
 })
@@ -164,8 +189,10 @@ const onlinePage = ref(1)
 const onlineHasMore = ref(false)
 const onlineBrokenCovers = ref<Record<string, boolean>>({})
 let onlineDebounceTimer: ReturnType<typeof setTimeout> | null = null
+let localSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let localHistoryTimer: ReturnType<typeof setTimeout> | null = null
 let onlineSearchSeq = 0
+let localCoverResolveSeq = 0
 
 // 历史搜索记录（搜我的借阅 与 在线搜全馆书库 各自独立，最多保留 10 条，持久化在 localStorage）
 const SEARCH_HISTORY_LOCAL_KEY = 'lh_search_history_local_v1'
@@ -256,6 +283,12 @@ async function selectHistoryKeyword(item: string) {
       onlineDebounceTimer = null
     }
     void runOnlineCatalogSearch()
+  } else {
+    if (localSearchDebounceTimer) {
+      clearTimeout(localSearchDebounceTimer)
+      localSearchDebounceTimer = null
+    }
+    localSearchQuery.value = item
   }
 }
 
@@ -267,6 +300,12 @@ function handleSearchEnter() {
   showHistoryDropdown.value = false
   if (searchMode.value === 'online') {
     void runOnlineCatalogSearch()
+  } else {
+    if (localSearchDebounceTimer) {
+      clearTimeout(localSearchDebounceTimer)
+      localSearchDebounceTimer = null
+    }
+    localSearchQuery.value = localSearchInput.value
   }
 }
 
@@ -299,6 +338,22 @@ const filterTag = computed<string>(() => {
 const sortField = ref<SortField>('loanDate')
 const sortOrder = ref<SortOrder>('desc')
 
+// 本地搜索输入：打字停顿满 1 秒 (1000ms) 后才执行搜索，继续打字则重置计时器不触发搜索
+watch(localSearchInput, (newVal) => {
+  if (localSearchDebounceTimer) {
+    clearTimeout(localSearchDebounceTimer)
+    localSearchDebounceTimer = null
+  }
+  if (!newVal.trim()) {
+    localSearchQuery.value = ''
+    return
+  }
+  localSearchDebounceTimer = setTimeout(() => {
+    localSearchDebounceTimer = null
+    localSearchQuery.value = newVal
+  }, 1000)
+})
+
 watch(localSearchQuery, (newVal, oldVal) => {
   if (localHistoryTimer) clearTimeout(localHistoryTimer)
   const trimmed = newVal.trim()
@@ -307,7 +362,7 @@ watch(localSearchQuery, (newVal, oldVal) => {
       if (localSearchQuery.value.trim() === trimmed) {
         saveSearchHistory(trimmed, 'local')
       }
-    }, 1200)
+    }, 500)
   }
   const hasNew = Boolean(trimmed)
   const hadOld = Boolean(oldVal?.trim())
@@ -320,6 +375,7 @@ watch(localSearchQuery, (newVal, oldVal) => {
   }
 })
 
+// 在线搜索输入：打字过程不自动触发搜索，仅在清空输入框时重置结果（等用户按回车或点击「在线搜索」按钮才搜索）
 watch(onlineSearchQuery, (newVal) => {
   if (onlineDebounceTimer) clearTimeout(onlineDebounceTimer)
   const trimmed = newVal.trim()
@@ -329,11 +385,7 @@ watch(onlineSearchQuery, (newVal) => {
     onlineLoadingMore.value = false
     onlinePage.value = 1
     onlineHasMore.value = false
-    return
   }
-  onlineDebounceTimer = setTimeout(() => {
-    void runOnlineCatalogSearch()
-  }, 450)
 })
 
 function switchSearchMode(mode: 'local' | 'online') {
@@ -352,7 +404,7 @@ function handleOnlineBranchChange() {
   } catch {
     // ignore
   }
-  if (onlineSearchQuery.value.trim()) {
+  if (onlineSearched.value && onlineSearchQuery.value.trim()) {
     void runOnlineCatalogSearch()
   }
 }
@@ -364,7 +416,7 @@ function toggleOnlineOnlyAvailable() {
   } catch {
     // ignore
   }
-  if (onlineSearchQuery.value.trim()) {
+  if (onlineSearched.value && onlineSearchQuery.value.trim()) {
     void runOnlineCatalogSearch()
   }
 }
@@ -376,17 +428,30 @@ function toggleOnlineAutoGroup() {
   } catch {
     // ignore
   }
-  if (onlineSearchQuery.value.trim()) {
+  if (onlineSearched.value && onlineSearchQuery.value.trim()) {
     void runOnlineCatalogSearch()
   }
 }
 
+/**
+ * 「先快后大」封面分批切片器：首屏前 4 本极速优先返回，后续每 12 本合并为一批
+ */
+function buildFastFirstCoverBatches<T>(list: T[]): T[][] {
+  if (!list || list.length === 0) return []
+  const batches: T[][] = []
+  const firstBatch = list.slice(0, 4)
+  if (firstBatch.length > 0) batches.push(firstBatch)
+  for (let i = 4; i < list.length; i += 12) {
+    batches.push(list.slice(i, i + 12))
+  }
+  return batches
+}
+
 async function resolveOnlineItemsCovers(targetList: BorrowRecord[], currentSeq: number) {
   if (!targetList || targetList.length === 0) return
-  const batchSize = 18
-  for (let i = 0; i < targetList.length; i += batchSize) {
+  const batches = buildFastFirstCoverBatches(targetList)
+  for (const batch of batches) {
     if (currentSeq !== onlineSearchSeq) return
-    const batch = targetList.slice(i, i + batchSize)
     try {
       const coverRes = await apiFetch('/api/covers/resolve', {
         method: 'POST',
@@ -678,6 +743,7 @@ function needsCoverUpgrade(url?: string): boolean {
 }
 
 async function resolveMissingBookCovers() {
+  const mySeq = ++localCoverResolveSeq
   if (coverResolveTaskRunning) {
     coverResolvePendingRerun = true
     return
@@ -722,11 +788,13 @@ async function resolveMissingBookCovers() {
   coverResolveTaskRunning = true
   resolvingCovers.value = true
   try {
-    const batchSize = 18
+    const batches = buildFastFirstCoverBatches(missing)
     let resolvedCount = 0
-    for (let i = 0; i < missing.length; i += batchSize) {
-      const batch = missing.slice(i, i + batchSize)
-      coverProgressText.value = `正在智能匹配图书封面 (${Math.min(i + batch.length, missing.length)}/${missing.length})...`
+    let processedCount = 0
+    for (const batch of batches) {
+      if (mySeq !== localCoverResolveSeq) break
+      processedCount += batch.length
+      coverProgressText.value = `正在智能匹配图书封面 (${Math.min(processedCount, missing.length)}/${missing.length})...`
       const resp = await apiFetch('/api/covers/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -740,6 +808,7 @@ async function resolveMissingBookCovers() {
           })),
         }),
       }).then((r) => parseJsonSafe(r))
+      if (mySeq !== localCoverResolveSeq) break
 
       if (resp?.ok && resp.covers) {
         const covers: Record<string, string> = resp.covers
@@ -820,6 +889,10 @@ async function reloadFromDB() {
 
 onMounted(() => {
   window.addEventListener('resize', handleWindowResize)
+  registerMobileMapPicker((target, info, options) => {
+    rememberMapChoice.value = Boolean(getPreferredMapProvider())
+    mobileMapPickerState.value = { target, info, options }
+  })
   loadSearchHistory()
   reloadFromDB()
   if (typeof IntersectionObserver !== 'undefined') {
@@ -839,6 +912,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleWindowResize)
+  registerMobileMapPicker(null)
   if (localSentinelObserver) {
     localSentinelObserver.disconnect()
     localSentinelObserver = null
@@ -1099,6 +1173,11 @@ const sameBookHistoryForActive = computed(() => {
 })
 
 function resetAllFilters() {
+  if (localSearchDebounceTimer) {
+    clearTimeout(localSearchDebounceTimer)
+    localSearchDebounceTimer = null
+  }
+  localSearchInput.value = ''
   localSearchQuery.value = ''
   filterLibrary.value = 'all'
   filterStatus.value = 'all'
@@ -1624,6 +1703,11 @@ function getRepeatCount(title: string): number {
                     onlinePage = 1;
                     onlineHasMore = false;
                   } else {
+                    if (localSearchDebounceTimer) {
+                      clearTimeout(localSearchDebounceTimer);
+                      localSearchDebounceTimer = null;
+                    }
+                    localSearchInput = '';
                     localSearchQuery = '';
                   }
                 "
@@ -2115,6 +2199,82 @@ function getRepeatCount(title: string): number {
             @click="handleConfirmLogout"
           >
             确认退出
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 移动端地图软件选择底部面板 (兼容 iOS / Android / 微信内浏览器) -->
+    <div
+      v-if="mobileMapPickerState"
+      class="fixed inset-0 z-[90] bg-slate-900/55 backdrop-blur-[1px] flex items-end sm:items-center justify-center p-0 sm:p-4"
+      @click="mobileMapPickerState = null"
+    >
+      <div
+        class="w-full max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl border border-slate-200 p-4 sm:p-5 space-y-3.5"
+        @click.stop
+      >
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <div class="text-sm sm:text-base font-bold text-slate-900 truncate">
+              📍 导航前往：{{ mobileMapPickerState.info.name }}
+            </div>
+            <div
+              v-if="mobileMapPickerState.info.address && mobileMapPickerState.info.address !== '未知地址'"
+              class="text-xs text-slate-500 mt-0.5 select-text break-all"
+            >
+              {{ mobileMapPickerState.info.address }}
+            </div>
+          </div>
+          <button
+            type="button"
+            class="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer shrink-0"
+            @click="mobileMapPickerState = null"
+          >
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
+        <div class="space-y-2">
+          <a
+            v-for="opt in mobileMapPickerState.options"
+            :key="opt.id"
+            :href="opt.url"
+            :target="opt.url.startsWith('https://maps.apple.com/') ? '_self' : '_blank'"
+            rel="noopener noreferrer"
+            class="flex items-center justify-between gap-3 p-3 rounded-xl border border-slate-200 hover:border-teal-500 hover:bg-teal-50/50 active:bg-teal-50 transition cursor-pointer select-none"
+            @click="handleSelectMapProvider(opt)"
+          >
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-bold text-slate-900">{{ opt.name }}</span>
+                <span class="px-1.5 py-0.5 rounded-md bg-teal-50 text-teal-700 border border-teal-200 text-[10px] font-semibold">
+                  {{ opt.badge }}
+                </span>
+              </div>
+              <div class="text-[11px] text-slate-500 mt-0.5 truncate">
+                {{ opt.desc }}
+              </div>
+            </div>
+            <ChevronRight class="w-4 h-4 text-slate-400 shrink-0" />
+          </a>
+        </div>
+
+        <div class="flex items-center justify-between pt-1 border-t border-slate-100 text-xs">
+          <label class="inline-flex items-center gap-1.5 text-slate-600 cursor-pointer select-none">
+            <input
+              v-model="rememberMapChoice"
+              type="checkbox"
+              class="rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+            />
+            <span>记住我的选择，下次直接打开</span>
+          </label>
+          <button
+            type="button"
+            class="px-3 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium cursor-pointer"
+            @click="mobileMapPickerState = null"
+          >
+            取消
           </button>
         </div>
       </div>

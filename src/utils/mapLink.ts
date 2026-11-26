@@ -57,6 +57,80 @@ export interface LibraryPoiInfo {
   query: string
 }
 
+export type MapProviderId = 'amap' | 'baidu' | 'apple' | 'tencent'
+
+export interface MapProviderOption {
+  id: MapProviderId
+  name: string
+  desc: string
+  badge: string
+  url: string
+}
+
+const PREFERRED_MAP_STORAGE_KEY = 'lh_preferred_map_provider_v1'
+
+type MobileMapPickerCallback = (
+  target: MapLocationTarget,
+  info: LibraryPoiInfo,
+  options: MapProviderOption[]
+) => void
+
+let mobileMapPickerCallback: MobileMapPickerCallback | null = null
+
+export function registerMobileMapPicker(cb: MobileMapPickerCallback | null): void {
+  mobileMapPickerCallback = cb
+}
+
+export function getPreferredMapProvider(): MapProviderId | null {
+  if (typeof localStorage === 'undefined') return null
+  try {
+    const val = localStorage.getItem(PREFERRED_MAP_STORAGE_KEY)
+    if (val === 'amap' || val === 'baidu' || val === 'apple' || val === 'tencent') {
+      return val
+    }
+  } catch {
+    // ignore
+  }
+  return null
+}
+
+export function setPreferredMapProvider(provider: MapProviderId | null): void {
+  if (typeof localStorage === 'undefined') return
+  try {
+    if (!provider) {
+      localStorage.removeItem(PREFERRED_MAP_STORAGE_KEY)
+    } else {
+      localStorage.setItem(PREFERRED_MAP_STORAGE_KEY, provider)
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function isIosPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent || ''
+  const platform = (navigator as any).platform || ''
+  return (
+    /iPhone|iPad|iPod/i.test(ua) ||
+    (platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1)
+  )
+}
+
+export function isMobileDeviceEnv(forceMobileMode?: boolean): boolean {
+  if (forceMobileMode) return true
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent || ''
+  return /Android|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(ua) || isIosPlatform()
+}
+
+export function getCleanMapSearchText(info: LibraryPoiInfo): string {
+  if (info.address && info.address !== '未知地址') {
+    return `${info.name} ${info.address}`.replace(/\s+/g, ' ').trim()
+  }
+  return (info.query || info.name || '杭州图书馆').replace(/\s+/g, ' ').trim()
+}
+
 /**
  * 将 addr/zjlib_branches.json 与 addr/hzlib_branches.json 构建为内存索引
  */
@@ -254,28 +328,112 @@ export function getBaiduMapUrl(target: MapLocationTarget): string {
   return `/api/map/go?q=${encodeURIComponent(info.query)}&c=${info.cityCode}`
 }
 
+export function getMobileMapProviderOptions(target: MapLocationTarget): MapProviderOption[] {
+  const info = getLibraryAddressInfo(target)
+  const keyword = getCleanMapSearchText(info)
+  const encodedKw = encodeURIComponent(keyword)
+  const cityName = info.cityCode === 294 ? '湖州' : '杭州'
+  const cityAdcode = info.cityCode === 294 ? '330500' : '330100'
+
+  const amapUrl = `https://uri.amap.com/search?keyword=${encodedKw}&city=${cityAdcode}&view=map&src=LibraryHelper&coordinate=gaode&callnative=1`
+  const baiduUrl = getBaiduMapUrl(target)
+  const appleUrl = `https://maps.apple.com/?q=${encodedKw}`
+  const tencentUrl = `https://apis.map.qq.com/uri/v1/search?keyword=${encodedKw}&region=${encodeURIComponent(cityName)}&referer=LibraryHelper`
+
+  const list: MapProviderOption[] = [
+    {
+      id: 'amap',
+      name: '高德地图',
+      desc: '自动唤起高德 App 或打开移动网页导航',
+      badge: '常用推荐',
+      url: amapUrl,
+    },
+    {
+      id: 'baidu',
+      name: '百度地图',
+      desc: '精准锁定图书馆场馆建筑点位',
+      badge: '精准建筑',
+      url: baiduUrl,
+    },
+  ]
+
+  if (isIosPlatform()) {
+    list.push({
+      id: 'apple',
+      name: '苹果地图 (Apple Maps)',
+      desc: '直接唤起 iPhone / iPad 系统自带地图',
+      badge: 'iOS原生',
+      url: appleUrl,
+    })
+  } else {
+    list.push({
+      id: 'apple',
+      name: '苹果 / 系统地图',
+      desc: 'iOS 唤起自带苹果地图，其他设备打开通用地图页',
+      badge: '系统直达',
+      url: appleUrl,
+    })
+  }
+
+  list.push({
+    id: 'tencent',
+    name: '腾讯地图',
+    desc: '微信生态内兼容性好，支持直接查看路线',
+    badge: '微信友好',
+    url: tencentUrl,
+  })
+
+  return list
+}
+
+export function openMapUrlSafely(url: string): void {
+  if (!url || typeof window === 'undefined') return
+  // iOS Safari 对 https://maps.apple.com Universal Link 使用 location.href 最稳定，不会留下空白新标签页
+  if (url.startsWith('https://maps.apple.com/')) {
+    window.location.href = url
+    return
+  }
+  const a = document.createElement('a')
+  a.href = url
+  a.target = '_blank'
+  a.rel = 'noopener noreferrer'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+}
+
 /**
  * 打开图书馆地图定位：
- * - PC端：直接打开百度地图 17 级比例尺精准建筑定位页
- * - 移动端真机：调用系统默认地图软件 (geo: URI)
+ * - PC端（Windows / macOS）：直接在新标签页打开百度地图 17 级比例尺精准建筑定位页
+ * - 移动端（iOS / Android / 手机预览框）：弹出地图软件选择面板（或按已记住的偏好直接打开）
  */
 export function openLibraryLocationInMap(
   target: MapLocationTarget,
-  _isMobileMode?: boolean
+  isMobileMode?: boolean,
+  forceShowPicker = false
 ): void {
   const info = getLibraryAddressInfo(target)
-  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : ''
-  const isRealMobileDevice = /Android|iPhone|iPad|iPod|HarmonyOS|Mobile/i.test(ua)
-
-  if (isRealMobileDevice) {
-    // 手机真机端：优先通过标准 geo: 协议唤起手机系统默认地图 App（高德/百度/腾讯/苹果地图）
-    const encoded = encodeURIComponent(`${info.name} ${info.address}`)
-    window.location.href = `geo:0,0?q=${encoded}`
+  if (isMobileDeviceEnv(isMobileMode)) {
+    const options = getMobileMapProviderOptions(target)
+    const savedProvider = !forceShowPicker ? getPreferredMapProvider() : null
+    if (savedProvider) {
+      const matched = options.find((o) => o.id === savedProvider) || options[0]
+      if (matched) {
+        openMapUrlSafely(matched.url)
+        return
+      }
+    }
+    if (mobileMapPickerCallback) {
+      mobileMapPickerCallback(target, info, options)
+      return
+    }
+    // 兜底：若未注册弹窗回调，使用全端兼容的高德 https Universal Link
+    openMapUrlSafely(options[0].url)
     return
   }
 
   const pcBaiduMapUrl = getBaiduMapUrl(target)
-  window.open(pcBaiduMapUrl, '_blank', 'noopener')
+  openMapUrlSafely(pcBaiduMapUrl)
 }
 
 /**

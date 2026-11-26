@@ -162,6 +162,7 @@ function prioritizeHoldingsForSelectedBranch(
   })
 }
 const addressPopover = ref<{
+  target: { library?: 'zjlib' | 'hzlib'; libName: string; location?: string }
   name: string
   address: string
   copied: boolean
@@ -199,6 +200,11 @@ async function showAndCopyAddress(target: {
   const info = getLibraryAddressInfo(target)
   const copied = await copyTextToClipboard(info.address)
   addressPopover.value = {
+    target: {
+      library: target.library,
+      libName: target.libName || '',
+      location: target.location,
+    },
     name: info.name,
     address: info.address,
     copied,
@@ -749,13 +755,26 @@ function getBorrowStatusBadge(book: BorrowRecord) {
             已自动复制到剪贴板
           </span>
           <span v-else class="text-slate-500">请长按或划选上方地址复制</span>
-          <button
-            type="button"
-            class="px-3 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-semibold cursor-pointer"
-            @click="addressPopover = null"
-          >
-            知道了
-          </button>
+          <div class="flex items-center gap-1.5">
+            <button
+              type="button"
+              class="px-2.5 py-1 rounded-lg border border-teal-200 bg-teal-50 hover:bg-teal-100 text-teal-700 font-semibold cursor-pointer"
+              @click="
+                const t = addressPopover.target;
+                addressPopover = null;
+                openLibraryLocationInMap(t, true, true);
+              "
+            >
+              切换地图打开
+            </button>
+            <button
+              type="button"
+              class="px-3 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-semibold cursor-pointer"
+              @click="addressPopover = null"
+            >
+              知道了
+            </button>
+          </div>
         </div>
       </div>
     </div>
