@@ -33,6 +33,8 @@ export interface BorrowRecord {
   id: string
   library: LibrarySource
   subLibrary: string
+  /** 该条借阅记录归属的读者证号/身份证号/账号 */
+  account?: string
   status: BorrowStatus
   title: string
   author: string
@@ -54,6 +56,7 @@ export interface BorrowRecord {
   updatedAt: number
   // 在线全馆书目检索扩展字段
   isOnlineCatalog?: boolean
+  rawOrder?: number
   publisher?: string
   pubDate?: string
   availableCount?: number
@@ -83,6 +86,8 @@ export interface BookAggregatedGroup {
 export interface SyncMeta {
   zjlibLastSync?: string
   hzlibLastSync?: string
+  zjlibAccount?: string
+  hzlibAccount?: string
   zjlibCount?: number
   hzlibCount?: number
 }

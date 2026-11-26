@@ -37,6 +37,7 @@ import {
   purgeDemoAndBrokenRecords,
   isDemoOrBrokenRecord,
   batchUpdateCoverUrls,
+  clearCoverUrlsByIds,
 } from './services/db'
 import {
   filterAndSortRecords,
@@ -46,10 +47,16 @@ import {
   getSearchRelevanceScore,
   getDaysRemaining,
   explainCallNo,
+  parseJsonSafe,
+  toThumbnailCoverUrl,
+  toHighResCoverUrl,
+  isHighResCoverDecoded,
+  preloadAndDecodeHighResCover,
   type SortField,
   type SortOrder,
 } from './utils/search'
 import { ZJLIB_BRANCH_CONFIG, HZLIB_BRANCH_CONFIG } from './utils/mapLink'
+import versionInfo from '../version.json'
 import { DEMO_BORROW_RECORDS } from './data/demoRecords'
 import SyncImportModal from './components/SyncImportModal.vue'
 import DedupCheckModal from './components/DedupCheckModal.vue'
@@ -77,13 +84,43 @@ const showSyncModal = ref(false)
 const showDedupModal = ref(false)
 const showLogoutConfirm = ref(false)
 const activeRecord = ref<BorrowRecord | null>(null)
-const fullscreenCoverRecord = ref<{ title: string; coverUrl: string } | null>(null)
+const fullscreenCoverRecord = ref<{
+  id?: string
+  title: string
+  coverUrl: string
+  author?: string
+  publisher?: string
+  isbn?: string
+} | null>(null)
+const fullscreenActiveSrc = ref('')
 const toastMessage = ref('')
+
+function openFullscreenCover(payload: {
+  id?: string
+  title: string
+  coverUrl: string
+  author?: string
+  publisher?: string
+  isbn?: string
+}) {
+  const thumbUrl = toThumbnailCoverUrl(payload.coverUrl)
+  const hdUrl = toHighResCoverUrl(payload.coverUrl)
+  fullscreenActiveSrc.value = isHighResCoverDecoded(payload.coverUrl) ? hdUrl : thumbUrl
+  fullscreenCoverRecord.value = { ...payload }
+  if (fullscreenActiveSrc.value !== hdUrl && hdUrl && hdUrl !== thumbUrl) {
+    void preloadAndDecodeHighResCover(payload.coverUrl).then((ok) => {
+      if (ok && fullscreenCoverRecord.value?.coverUrl === payload.coverUrl) {
+        fullscreenActiveSrc.value = hdUrl
+      }
+    })
+  }
+}
 
 // Search & Filter states
 const SEARCH_MODE_SESSION_KEY = 'lh_search_mode_v1'
 const ONLINE_BRANCH_SESSION_KEY = 'lh_online_branch_v1'
 const ONLINE_AVAIL_SESSION_KEY = 'lh_online_avail_v1'
+const ONLINE_AUTO_GROUP_SESSION_KEY = 'lh_online_auto_group_v2'
 const localSearchQuery = ref('')
 const onlineSearchQuery = ref('')
 const searchMode = ref<'local' | 'online'>(
@@ -109,6 +146,12 @@ const onlineOnlyAvailable = ref<boolean>(
   typeof sessionStorage !== 'undefined' && sessionStorage.getItem(ONLINE_AVAIL_SESSION_KEY) !== null
     ? sessionStorage.getItem(ONLINE_AVAIL_SESSION_KEY) !== '0'
     : true
+)
+const onlineAutoGroup = ref<boolean>(
+  typeof sessionStorage !== 'undefined' &&
+    sessionStorage.getItem(ONLINE_AUTO_GROUP_SESSION_KEY) !== null
+    ? sessionStorage.getItem(ONLINE_AUTO_GROUP_SESSION_KEY) === '1'
+    : false
 )
 const onlineLoading = ref(false)
 const onlineLoadingMore = ref(false)
@@ -325,6 +368,69 @@ function toggleOnlineOnlyAvailable() {
   }
 }
 
+function toggleOnlineAutoGroup() {
+  onlineAutoGroup.value = !onlineAutoGroup.value
+  try {
+    sessionStorage.setItem(ONLINE_AUTO_GROUP_SESSION_KEY, onlineAutoGroup.value ? '1' : '0')
+  } catch {
+    // ignore
+  }
+  if (onlineSearchQuery.value.trim()) {
+    void runOnlineCatalogSearch()
+  }
+}
+
+async function resolveOnlineItemsCovers(targetList: BorrowRecord[], currentSeq: number) {
+  if (!targetList || targetList.length === 0) return
+  const batchSize = 6
+  for (let i = 0; i < targetList.length; i += batchSize) {
+    if (currentSeq !== onlineSearchSeq) return
+    const batch = targetList.slice(i, i + batchSize)
+    try {
+      const coverRes = await fetch('/api/covers/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: batch.map((b) => ({
+            id: b.id,
+            isbn: b.isbn,
+            title: b.title,
+            author: b.author,
+            publisher: b.publisher || '',
+          })),
+        }),
+      }).then((r) => parseJsonSafe(r))
+      if (currentSeq !== onlineSearchSeq) return
+      if (coverRes?.ok && coverRes.covers) {
+        const covers: Record<string, string> = coverRes.covers
+        const byNormTitle = new Map<string, string>()
+        for (const bItem of batch) {
+          const cov = covers[bItem.id]
+          if (cov) {
+            const normT = normalizeBookTitle(bItem.title)
+            if (normT) byNormTitle.set(normT, cov)
+          }
+        }
+        let updated = false
+        for (const b of onlineItems.value) {
+          const nextCov =
+            covers[b.id] ||
+            (!b.coverUrl ? byNormTitle.get(normalizeBookTitle(b.title)) : '')
+          if (nextCov && b.coverUrl !== nextCov) {
+            b.coverUrl = nextCov
+            updated = true
+          }
+        }
+        if (updated) {
+          onlineItems.value = [...onlineItems.value]
+        }
+      }
+    } catch {
+      // ignore single batch error
+    }
+  }
+}
+
 async function runOnlineCatalogSearch() {
   if (onlineDebounceTimer) {
     clearTimeout(onlineDebounceTimer)
@@ -355,10 +461,11 @@ async function runOnlineCatalogSearch() {
         keyword: kw,
         branch: onlineBranch.value,
         onlyAvailable: onlineOnlyAvailable.value,
+        autoGroup: onlineAutoGroup.value,
         rows: 15,
         page: 1,
       }),
-    }).then((r) => r.json())
+    }).then((r) => parseJsonSafe(r))
     if (currentSeq !== onlineSearchSeq) return
     if (resp?.ok) {
       onlineSearched.value = true
@@ -366,42 +473,20 @@ async function runOnlineCatalogSearch() {
       onlineHzTotal.value = resp.hzTotal || 0
       onlineHasMore.value = Boolean(resp.hasMore)
       const nowIso = new Date().toISOString()
-      const normalizedList = sortOnlineCatalogItems(
-        mapCatalogItems(resp.items || [], nowIso),
-        kw
-      )
+      const mapped = mapCatalogItems(resp.items || [], nowIso, 0)
+      const normalizedList = onlineAutoGroup.value
+        ? sortOnlineCatalogItems(mapped, kw)
+        : mapped
       onlineItems.value = normalizedList
-      // 异步补全在线搜索结果封面
+      // 小批量渐进异步补全在线搜索结果封面（每 6 本实时上屏）
       if (normalizedList.length > 0) {
-        void fetch('/api/covers/resolve', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            items: normalizedList.map((b) => ({
-              id: b.id,
-              isbn: b.isbn,
-              title: b.title,
-              author: b.author,
-            })),
-          }),
-        })
-          .then((r) => r.json())
-          .then((coverRes) => {
-            if (currentSeq !== onlineSearchSeq) return
-            if (coverRes?.ok && coverRes.covers) {
-              for (const b of onlineItems.value) {
-                if (coverRes.covers[b.id]) b.coverUrl = coverRes.covers[b.id]
-              }
-              onlineItems.value = [...onlineItems.value]
-            }
-          })
-          .catch(() => {})
+        void resolveOnlineItemsCovers(normalizedList, currentSeq)
       }
     }
-  } catch {
+  } catch (err: any) {
     if (currentSeq === onlineSearchSeq) {
       onlineSearched.value = false
-      showToast('在线检索图书馆书目失败，请稍后重试')
+      showToast(err?.message || '在线检索图书馆书目失败，请稍后重试')
     }
   } finally {
     if (currentSeq === onlineSearchSeq) {
@@ -410,8 +495,8 @@ async function runOnlineCatalogSearch() {
   }
 }
 
-function mapCatalogItems(rawList: any[], nowIso: string): BorrowRecord[] {
-  return (rawList || []).map((item: any) => ({
+function mapCatalogItems(rawList: any[], nowIso: string, baseOrder = 0): BorrowRecord[] {
+  return (rawList || []).map((item: any, idx: number) => ({
     id: item.id,
     library: item.library,
     subLibrary:
@@ -435,6 +520,7 @@ function mapCatalogItems(rawList: any[], nowIso: string): BorrowRecord[] {
     progress: 0,
     updatedAt: nowIso,
     isOnlineCatalog: true,
+    rawOrder: baseOrder + idx,
     publisher: item.publisher || '',
     pubDate: item.pubDate || '',
     availableCount: Number(item.availableCount || 0),
@@ -473,26 +559,31 @@ async function loadMoreOnlineCatalog() {
         keyword: kw,
         branch: onlineBranch.value,
         onlyAvailable: onlineOnlyAvailable.value,
+        autoGroup: onlineAutoGroup.value,
         rows: 15,
         page: nextPage,
       }),
-    }).then((r) => r.json())
+    }).then((r) => parseJsonSafe(r))
     if (currentSeq !== onlineSearchSeq) return
     if (resp?.ok) {
       onlinePage.value = nextPage
       onlineHasMore.value = Boolean(resp.hasMore)
       const existingIds = new Set(onlineItems.value.map((x) => x.id))
-      const nextItems = mapCatalogItems(resp.items || [], new Date().toISOString()).filter(
-        (x) => !existingIds.has(x.id)
-      )
+      const prevLen = onlineItems.value.length
+      const nextItems = mapCatalogItems(
+        resp.items || [],
+        new Date().toISOString(),
+        prevLen
+      ).filter((x) => !existingIds.has(x.id))
       if (nextItems.length > 0) {
-        const prevLen = onlineItems.value.length
         const appended = [...onlineItems.value, ...nextItems]
-        const sorted = sortOnlineCatalogItems(appended, kw)
-        // 判断是否有新页项被归位插入到了原有列表中间/前面
-        const didReorderExisting = sorted
-          .slice(0, prevLen)
-          .some((item, idx) => item.id !== appended[idx]?.id)
+        const sorted = onlineAutoGroup.value
+          ? sortOnlineCatalogItems(appended, kw)
+          : appended
+        // 判断是否有新页项被归位插入到了原有列表中间/前面（仅在开启「自动归类」时触发）
+        const didReorderExisting =
+          onlineAutoGroup.value &&
+          sorted.slice(0, prevLen).some((item, idx) => item.id !== appended[idx]?.id)
 
         if (didReorderExisting) {
           // 记录当前视口内锚点卡片的位置，重排后立即补偿滚动偏移，防止界面跳动与闪烁
@@ -524,28 +615,7 @@ async function loadMoreOnlineCatalog() {
         } else {
           onlineItems.value = sorted
         }
-        void fetch('/api/covers/resolve', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            items: nextItems.map((b) => ({
-              id: b.id,
-              title: b.title,
-              author: b.author,
-              isbn: b.isbn,
-              library: b.library,
-              bibId: b.bibId,
-            })),
-          }),
-        })
-          .then((r) => r.json())
-          .then((covRes) => {
-            if (currentSeq !== onlineSearchSeq || !covRes?.ok || !covRes.covers) return
-            onlineItems.value = onlineItems.value.map((it) =>
-              covRes.covers[it.id] ? { ...it, coverUrl: covRes.covers[it.id] } : it
-            )
-          })
-          .catch(() => {})
+        void resolveOnlineItemsCovers(nextItems, currentSeq)
       }
     }
   } catch {
@@ -563,18 +633,31 @@ const retriedInternetCoverIds = new Set<string>()
 const resolvingCovers = ref(false)
 const coverProgressText = ref('')
 let coverResolveTaskRunning = false
+let coverResolvePendingRerun = false
 
 function isBadOrPlaceholderCoverUrl(url?: string): boolean {
   if (!url) return true
+  const lower = url.toLowerCase()
   return (
-    url.includes('5133167f051e4f9a8c8797b35577ef4f') ||
-    url.includes('3593b961f9094da9887a8cbb2105d18c') ||
-    url.includes('fbc18786cafb44babc3b3b666bb0710c') ||
-    url.includes('1a8b6e68853e4278bd05ed5a05844deb') ||
-    url.includes('tc-cover-prod.oss') ||
-    url.includes('xinhuapic.oss') ||
-    url.includes('doubanio.com') ||
-    url.endsWith('.null')
+    lower.includes('d9fa61ec5b294296a2a53bfe5a167c91') ||
+    lower.includes('fb87c5fae030416d8f9629c56451e355') ||
+    lower.includes('5133167f051e4f9a8c8797b35577ef4f') ||
+    lower.includes('3593b961f9094da9887a8cbb2105d18c') ||
+    lower.includes('fbc18786cafb44babc3b3b666bb0710c') ||
+    lower.includes('1a8b6e68853e4278bd05ed5a05844deb') ||
+    lower.includes('1196498018,785825342') ||
+    lower.includes('1809027890,2934023687') ||
+    lower.includes('bigbg.png') ||
+    lower.includes('default_book') ||
+    lower.includes('no_pic') ||
+    lower.includes('nopic') ||
+    lower.includes('zanwu') ||
+    lower.includes('tc-cover-prod.oss') ||
+    lower.includes('xinhuapic.oss') ||
+    lower.includes('doubanio.com') ||
+    lower.includes('openbookscan.com.cn:1235') ||
+    lower.includes('=240=320') ||
+    lower.endsWith('.null')
   )
 }
 
@@ -585,27 +668,60 @@ function showToast(msg: string) {
   }, 3500)
 }
 
+const COVER_SCHEMA_V6_KEY = 'lh_cover_schema_v6'
+
+function needsCoverUpgrade(url?: string): boolean {
+  if (isBadOrPlaceholderCoverUrl(url)) return true
+  const s = String(url || '')
+  return s.includes('#hd=')
+}
+
 async function resolveMissingBookCovers() {
-  if (coverResolveTaskRunning) return
+  if (coverResolveTaskRunning) {
+    coverResolvePendingRerun = true
+    return
+  }
+  const clearedIds: string[] = []
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(COVER_SCHEMA_V6_KEY) !== '1') {
+      localStorage.setItem(COVER_SCHEMA_V6_KEY, '1')
+      for (const r of records.value) {
+        if (
+          r.coverUrl &&
+          (r.coverUrl.includes('#hd=') ||
+            (!r.isbn && r.coverUrl.includes('baidu.com')) ||
+            r.title.includes('航海王'))
+        ) {
+          r.coverUrl = ''
+          clearedIds.push(r.id)
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
   // First clear any known placeholder or expired OSS URLs so they get replaced with real internet covers
   for (const r of records.value) {
     if (r.coverUrl && isBadOrPlaceholderCoverUrl(r.coverUrl)) {
       r.coverUrl = ''
+      clearedIds.push(r.id)
     }
   }
-  // Prioritize currently visible filtered records first so above-the-fold covers appear immediately
-  const visibleIds = new Set(filteredRecords.value.map((r) => r.id))
-  const missingVisible = filteredRecords.value.filter((r) => isBadOrPlaceholderCoverUrl(r.coverUrl))
-  const missingRest = records.value.filter(
-    (r) => isBadOrPlaceholderCoverUrl(r.coverUrl) && !visibleIds.has(r.id)
-  )
-  const missing = [...missingVisible, ...missingRest]
+  if (clearedIds.length > 0) {
+    void clearCoverUrlsByIds(clearedIds)
+    records.value = [...records.value]
+  }
+  // 针对当前可见渲染批次中缺失封面或仍为早期 220x220 kaicai 低清缩略图的记录按需升级
+  const currentVisibleRecords = autoDedupByTitle.value
+    ? visibleAggregatedBooks.value.map((g) => g.records[0])
+    : visibleFilteredRecords.value
+  const missing = currentVisibleRecords.filter((r) => needsCoverUpgrade(r.coverUrl))
   if (missing.length === 0) return
 
   coverResolveTaskRunning = true
   resolvingCovers.value = true
   try {
-    const batchSize = 25
+    const batchSize = 6
     let resolvedCount = 0
     for (let i = 0; i < missing.length; i += batchSize) {
       const batch = missing.slice(i, i + batchSize)
@@ -619,21 +735,35 @@ async function resolveMissingBookCovers() {
             isbn: r.isbn,
             title: r.title,
             author: r.author,
+            publisher: r.publisher || '',
           })),
         }),
-      }).then((r) => r.json())
+      }).then((r) => parseJsonSafe(r))
 
       if (resp?.ok && resp.covers) {
         const covers: Record<string, string> = resp.covers
         const count = Object.keys(covers).length
         if (count > 0) {
           resolvedCount += count
-          await batchUpdateCoverUrls(covers)
-          for (const rec of records.value) {
-            if (covers[rec.id]) {
-              rec.coverUrl = covers[rec.id]
+          const expandedCovers: Record<string, string> = { ...covers }
+          const titleCoverMap = new Map<string, string>()
+          for (const bItem of batch) {
+            const cov = covers[bItem.id]
+            if (cov) {
+              const normT = normalizeBookTitle(bItem.title)
+              if (normT) titleCoverMap.set(normT, cov)
             }
           }
+          for (const rec of records.value) {
+            const directCov = covers[rec.id]
+            const sameTitleCov = titleCoverMap.get(normalizeBookTitle(rec.title))
+            const nextCov = directCov || sameTitleCov
+            if (nextCov) {
+              rec.coverUrl = nextCov
+              expandedCovers[rec.id] = nextCov
+            }
+          }
+          await batchUpdateCoverUrls(expandedCovers)
           records.value = [...records.value]
         }
       }
@@ -651,6 +781,12 @@ async function resolveMissingBookCovers() {
   } finally {
     resolvingCovers.value = false
     coverResolveTaskRunning = false
+    if (coverResolvePendingRerun) {
+      coverResolvePendingRerun = false
+      void nextTick(() => {
+        void resolveMissingBookCovers()
+      })
+    }
   }
 }
 
@@ -685,10 +821,27 @@ onMounted(() => {
   window.addEventListener('resize', handleWindowResize)
   loadSearchHistory()
   reloadFromDB()
+  if (typeof IntersectionObserver !== 'undefined') {
+    localSentinelObserver = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && hasMoreLocalItems.value && searchMode.value === 'local') {
+          loadMoreLocalItems()
+        }
+      },
+      { rootMargin: '240px' }
+    )
+    if (localLoadMoreSentinel.value) {
+      localSentinelObserver.observe(localLoadMoreSentinel.value)
+    }
+  }
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleWindowResize)
+  if (localSentinelObserver) {
+    localSentinelObserver.disconnect()
+    localSentinelObserver = null
+  }
 })
 
 // Map normalized title -> total borrow count
@@ -729,6 +882,54 @@ const aggregatedBooks = computed(() => aggregateRecordsByBook(filteredRecords.va
 
 const displayedCount = computed(() =>
   autoDedupByTitle.value ? aggregatedBooks.value.length : filteredRecords.value.length
+)
+
+const LOCAL_PAGE_SIZE = 36
+const localVisibleLimit = ref(LOCAL_PAGE_SIZE)
+const localLoadMoreSentinel = ref<HTMLElement | null>(null)
+let localSentinelObserver: IntersectionObserver | null = null
+
+watch(localLoadMoreSentinel, (el, oldEl) => {
+  if (localSentinelObserver) {
+    if (oldEl) localSentinelObserver.unobserve(oldEl)
+    if (el) localSentinelObserver.observe(el)
+  }
+})
+
+const visibleAggregatedBooks = computed(() =>
+  aggregatedBooks.value.slice(0, localVisibleLimit.value)
+)
+const visibleFilteredRecords = computed(() =>
+  filteredRecords.value.slice(0, localVisibleLimit.value)
+)
+const hasMoreLocalItems = computed(() => displayedCount.value > localVisibleLimit.value)
+
+function loadMoreLocalItems() {
+  if (!hasMoreLocalItems.value) return
+  localVisibleLimit.value += LOCAL_PAGE_SIZE
+  void nextTick(() => {
+    void resolveMissingBookCovers()
+  })
+}
+
+watch(
+  [
+    localSearchQuery,
+    filterLibrary,
+    filterStatus,
+    filterMark,
+    filterYear,
+    onlyMultiBorrowed,
+    sortField,
+    sortOrder,
+    autoDedupByTitle,
+  ],
+  () => {
+    localVisibleLimit.value = LOCAL_PAGE_SIZE
+    void nextTick(() => {
+      void resolveMissingBookCovers()
+    })
+  }
 )
 
 const isAllRecordsSelected = computed(
@@ -785,9 +986,17 @@ async function markCoverBroken(id: string) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         forceInternet: true,
-        items: [{ id: target.id, isbn: target.isbn, title: target.title, author: target.author }],
+        items: [
+          {
+            id: target.id,
+            isbn: target.isbn,
+            title: target.title,
+            author: target.author,
+            publisher: target.publisher || '',
+          },
+        ],
       }),
-    }).then((r) => r.json())
+    }).then((r) => parseJsonSafe(r))
     const newUrl = resp?.covers?.[id]
     if (newUrl && newUrl !== target.coverUrl) {
       await batchUpdateCoverUrls({ [id]: newUrl })
@@ -800,7 +1009,45 @@ async function markCoverBroken(id: string) {
   }
 }
 
+async function markOnlineCoverBroken(id: string) {
+  onlineBrokenCovers.value[id] = true
+  if (retriedInternetCoverIds.has(id)) return
+  retriedInternetCoverIds.add(id)
+  const target = onlineItems.value.find((r) => r.id === id)
+  if (!target) return
+  try {
+    const resp = await fetch('/api/covers/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        forceInternet: true,
+        items: [
+          {
+            id: target.id,
+            isbn: target.isbn,
+            title: target.title,
+            author: target.author,
+            publisher: target.publisher || '',
+          },
+        ],
+      }),
+    }).then((r) => parseJsonSafe(r))
+    const newUrl = resp?.covers?.[id]
+    if (newUrl && newUrl !== target.coverUrl) {
+      target.coverUrl = newUrl
+      delete onlineBrokenCovers.value[id]
+      onlineItems.value = [...onlineItems.value]
+    }
+  } catch {
+    // ignore
+  }
+}
+
 // Statistics
+const isDemoDataMode = computed(
+  () => records.value.length > 0 && records.value.every((r) => isDemoOrBrokenRecord(r))
+)
+
 const stats = computed(() => {
   const total = records.value.length
   const zjlibCount = records.value.filter((r) => r.library === 'zjlib').length
@@ -874,17 +1121,36 @@ let importQueue: Promise<void> = Promise.resolve()
 async function handleImported(payload: {
   records: Array<Partial<BorrowRecord>>
   source: 'zjlib' | 'hzlib' | 'mixed'
+  account?: string
+  isFullOnlineSync?: boolean
+  syncMetaPatch?: Partial<SyncMeta>
 }) {
   const task = importQueue.then(async () => {
-    const res = await upsertRecords(payload.records)
+    const res = await upsertRecords(payload.records, {
+      source: payload.source,
+      account: payload.account,
+      isFullOnlineSync: payload.isFullOnlineSync,
+    })
     const nowStr = new Date().toLocaleString('zh-CN', { hour12: false })
     if (payload.source === 'zjlib') {
-      await saveSyncMeta({ zjlibLastSync: nowStr })
+      await saveSyncMeta({
+        zjlibLastSync: nowStr,
+        ...(payload.account ? { zjlibAccount: payload.account.trim() } : {}),
+      })
     } else if (payload.source === 'hzlib') {
-      await saveSyncMeta({ hzlibLastSync: nowStr })
+      await saveSyncMeta({
+        hzlibLastSync: nowStr,
+        ...(payload.account ? { hzlibAccount: payload.account.trim() } : {}),
+      })
+    } else if (payload.syncMetaPatch) {
+      await saveSyncMeta(payload.syncMetaPatch)
     }
     await reloadFromDB()
-    showToast(`同步完成：新增 ${res.added} 条，更新 ${res.updated} 条，当前共 ${res.total} 条记录`)
+    const retainedHint =
+      res.retainedExpired > 0 ? `，保留本地早期历史 ${res.retainedExpired} 条` : ''
+    showToast(
+      `同步完成：新增 ${res.added} 条，更新 ${res.updated} 条${retainedHint}，当前共 ${res.total} 条记录`
+    )
   })
   // 保证即使前一个任务异常也不阻断后续入库队列
   importQueue = task.catch(() => {})
@@ -944,10 +1210,12 @@ async function handleConfirmLogout() {
   await clearAllLocalData()
   try {
     localStorage.removeItem('lh_hzlib_cred')
+    localStorage.removeItem('lh_hzlib_cookie')
     localStorage.removeItem('lh_zjlib_cred')
     localStorage.removeItem('lh_zjlib_token')
     localStorage.removeItem(SEARCH_HISTORY_LOCAL_KEY)
     localStorage.removeItem(SEARCH_HISTORY_ONLINE_KEY)
+    localStorage.setItem('lh_initialized_demo_v1', '1')
     localStorage.setItem('lh_first_init_done_v1', '1')
     sessionStorage.removeItem('lh_search_mode_v1')
     sessionStorage.removeItem('lh_online_branch_v1')
@@ -976,11 +1244,45 @@ async function handleConfirmLogout() {
 }
 
 function handleExportJson() {
+  let savedHzAccount = syncMeta.value.hzlibAccount || ''
+  let savedZjAccount = syncMeta.value.zjlibAccount || ''
+  try {
+    if (!savedHzAccount) {
+      const rawHz = localStorage.getItem('lh_hzlib_cred')
+      if (rawHz) savedHzAccount = String(JSON.parse(rawHz)?.account || '').trim()
+    }
+    if (!savedZjAccount) {
+      const rawZj = localStorage.getItem('lh_zjlib_cred')
+      if (rawZj) savedZjAccount = String(JSON.parse(rawZj)?.account || '').trim()
+    }
+  } catch {
+    // ignore
+  }
+  for (const r of records.value) {
+    if (!savedHzAccount && r.library === 'hzlib' && r.account) savedHzAccount = r.account
+    if (!savedZjAccount && r.library === 'zjlib' && r.account) savedZjAccount = r.account
+  }
+  const exportedRecords = records.value.map((r) => ({
+    ...r,
+    account:
+      r.account ||
+      (r.library === 'hzlib' ? savedHzAccount : r.library === 'zjlib' ? savedZjAccount : ''),
+  }))
   const data = {
     app: 'LibraryHelper',
+    version: versionInfo.version,
     exportedAt: new Date().toISOString(),
+    accounts: {
+      hzlibAccount: savedHzAccount,
+      zjlibAccount: savedZjAccount,
+    },
+    syncMeta: {
+      ...syncMeta.value,
+      hzlibAccount: savedHzAccount || syncMeta.value.hzlibAccount,
+      zjlibAccount: savedZjAccount || syncMeta.value.zjlibAccount,
+    },
     total: records.value.length,
-    records: records.value,
+    records: exportedRecords,
   }
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
   const a = document.createElement('a')
@@ -1063,11 +1365,11 @@ function getRepeatCount(title: string): number {
     <!-- Top Dev / Preview Toolbar -->
     <div class="bg-slate-900 text-slate-200 px-4 py-2 text-xs flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <span class="px-2 py-0.5 rounded bg-teal-500/20 text-teal-300 font-semibold border border-teal-500/30">
-          MVP 功能 1
-        </span>
-        <span class="hidden sm:inline text-slate-300">
-          浙江图书馆 + 杭州图书馆 · 个人借阅记录导出同步、全量秒搜与防重借助手
+        <span
+          class="px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono border border-slate-700"
+          :title="versionInfo.description"
+        >
+          v{{ versionInfo.version }}
         </span>
       </div>
       <div class="flex items-center gap-2">
@@ -1132,22 +1434,33 @@ function getRepeatCount(title: string): number {
 
             <div class="flex items-center gap-1.5 shrink-0">
               <button
-                class="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white font-semibold flex items-center justify-center gap-1.5 border border-white/20 transition cursor-pointer whitespace-nowrap"
+                v-if="isDemoDataMode"
+                class="px-3 py-1.5 rounded-xl bg-amber-500/25 hover:bg-rose-500/85 text-amber-100 hover:text-white font-semibold flex items-center justify-center gap-1.5 border border-amber-300/40 transition cursor-pointer whitespace-nowrap"
                 :class="isMobileLayout ? 'text-xs' : 'text-sm'"
-                @click="showSyncModal = true"
-              >
-                <RefreshCw class="w-3.5 h-3.5" />
-                {{ records.length > 0 ? '更新记录' : '导入记录' }}
-              </button>
-              <button
-                v-if="records.length > 0"
-                class="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-rose-500/80 text-white/95 hover:text-white font-medium flex items-center justify-center gap-1 border border-white/20 transition cursor-pointer whitespace-nowrap"
-                :class="isMobileLayout ? 'text-xs' : 'text-sm'"
-                @click="showLogoutConfirm = true"
+                @click="handleConfirmLogout"
               >
                 <LogOut class="w-3.5 h-3.5" />
-                退出登录
+                [测试数据] 退出登录
               </button>
+              <template v-else>
+                <button
+                  class="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white font-semibold flex items-center justify-center gap-1.5 border border-white/20 transition cursor-pointer whitespace-nowrap"
+                  :class="isMobileLayout ? 'text-xs' : 'text-sm'"
+                  @click="showSyncModal = true"
+                >
+                  <RefreshCw class="w-3.5 h-3.5" />
+                  {{ records.length > 0 ? '更新记录' : '导入记录' }}
+                </button>
+                <button
+                  v-if="records.length > 0"
+                  class="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-rose-500/80 text-white/95 hover:text-white font-medium flex items-center justify-center gap-1 border border-white/20 transition cursor-pointer whitespace-nowrap"
+                  :class="isMobileLayout ? 'text-xs' : 'text-sm'"
+                  @click="showLogoutConfirm = true"
+                >
+                  <LogOut class="w-3.5 h-3.5" />
+                  退出登录
+                </button>
+              </template>
             </div>
           </div>
 
@@ -1551,7 +1864,7 @@ function getRepeatCount(title: string): number {
               <!-- 默认过滤不在馆书籍开关 -->
               <button
                 type="button"
-                class="px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1 focus:outline-none select-none transition-colors cursor-pointer"
+                class="px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1 focus:outline-none select-none transition-colors cursor-pointer whitespace-nowrap"
                 :class="
                   onlineOnlyAvailable
                     ? 'bg-emerald-50 border-emerald-300 text-emerald-800 font-semibold'
@@ -1560,6 +1873,21 @@ function getRepeatCount(title: string): number {
                 @click="toggleOnlineOnlyAvailable"
               >
                 {{ onlineOnlyAvailable ? '🟢 只看有书' : '⚪ 只看有书' }}
+              </button>
+
+              <!-- 自动归类开关（默认关闭：按图书馆接口返回原序展示；开启：同系列按卷号归位排序） -->
+              <button
+                type="button"
+                class="px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1 focus:outline-none select-none transition-colors cursor-pointer whitespace-nowrap"
+                :class="
+                  onlineAutoGroup
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-800 font-semibold'
+                    : 'bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100'
+                "
+                title="开启时按同系列与卷号顺序自动归类；关闭时按图书馆官方接口返回的原始顺序展示"
+                @click="toggleOnlineAutoGroup"
+              >
+                {{ onlineAutoGroup ? '🟢 自动归类' : '⚪ 自动归类' }}
               </button>
             </div>
 
@@ -1590,8 +1918,8 @@ function getRepeatCount(title: string): number {
           :local-records="records"
           @search="runOnlineCatalogSearch"
           @load-more="loadMoreOnlineCatalog"
-          @zoom-cover="(p) => (fullscreenCoverRecord = p)"
-          @cover-error="(id) => (onlineBrokenCovers[id] = true)"
+          @zoom-cover="openFullscreenCover"
+          @cover-error="markOnlineCoverBroken"
         />
 
         <!-- Empty State -->
@@ -1631,7 +1959,7 @@ function getRepeatCount(title: string): number {
         <!-- MODE 1: DEDUPLICATED BY BOOK TITLE (DEFAULT) -->
         <section v-else-if="searchMode === 'local' && autoDedupByTitle" class="space-y-2.5">
           <BorrowBookCard
-            v-for="group in aggregatedBooks"
+            v-for="group in visibleAggregatedBooks"
             :key="group.normKey"
             :record="{
               ...group.records[0],
@@ -1648,24 +1976,50 @@ function getRepeatCount(title: string): number {
             :mobile-mode="isMobileLayout"
             :cover-broken="brokenCoverIds.has(group.records[0].id)"
             @select="(r) => (activeRecord = r)"
-            @zoom-cover="(p) => (fullscreenCoverRecord = p)"
+            @zoom-cover="openFullscreenCover"
             @cover-error="markCoverBroken"
           />
+          <div
+            v-if="hasMoreLocalItems"
+            ref="localLoadMoreSentinel"
+            class="pt-2 pb-4 flex justify-center"
+          >
+            <button
+              type="button"
+              class="px-5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-teal-50 hover:border-teal-500 text-xs font-semibold text-slate-700 shadow-2xs transition cursor-pointer"
+              @click="loadMoreLocalItems"
+            >
+              已显示 {{ visibleAggregatedBooks.length }} / {{ aggregatedBooks.length }} 本 · 加载更多
+            </button>
+          </div>
         </section>
 
         <!-- MODE 2: ALL TIMELINE RECORDS LIST -->
         <section v-else-if="searchMode === 'local'" class="space-y-2.5">
           <BorrowBookCard
-            v-for="rec in filteredRecords"
+            v-for="rec in visibleFilteredRecords"
             :key="rec.id"
             :record="rec"
             :repeat-count="getRepeatCount(rec.title)"
             :mobile-mode="isMobileLayout"
             :cover-broken="brokenCoverIds.has(rec.id)"
             @select="(r) => (activeRecord = r)"
-            @zoom-cover="(p) => (fullscreenCoverRecord = p)"
+            @zoom-cover="openFullscreenCover"
             @cover-error="markCoverBroken"
           />
+          <div
+            v-if="hasMoreLocalItems"
+            ref="localLoadMoreSentinel"
+            class="pt-2 pb-4 flex justify-center"
+          >
+            <button
+              type="button"
+              class="px-5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-teal-50 hover:border-teal-500 text-xs font-semibold text-slate-700 shadow-2xs transition cursor-pointer"
+              @click="loadMoreLocalItems"
+            >
+              已显示 {{ visibleFilteredRecords.length }} / {{ filteredRecords.length }} 条 · 加载更多
+            </button>
+          </div>
         </section>
       </div>
     </div>
@@ -1689,6 +2043,7 @@ function getRepeatCount(title: string): number {
       :records="records"
       :mobile-mode="isMobileLayout"
       @close="showDedupModal = false"
+      @zoom-cover="openFullscreenCover"
       @select-record="
         (rec) => {
           showDedupModal = false
@@ -1711,12 +2066,15 @@ function getRepeatCount(title: string): number {
       class="fixed inset-0 z-[80] bg-slate-950/88 backdrop-blur-xs flex flex-col items-center justify-center p-6 cursor-zoom-out"
       @click="fullscreenCoverRecord = null"
     >
-      <img
-        :src="fullscreenCoverRecord.coverUrl"
-        :alt="fullscreenCoverRecord.title"
-        referrerpolicy="no-referrer"
-        class="max-w-full max-h-[80vh] rounded-2xl shadow-2xl object-contain border border-white/15"
-      />
+      <div class="relative flex items-center justify-center max-w-full max-h-[80vh]">
+        <img
+          :src="fullscreenActiveSrc || toThumbnailCoverUrl(fullscreenCoverRecord.coverUrl)"
+          :alt="fullscreenCoverRecord.title"
+          decoding="sync"
+          referrerpolicy="no-referrer"
+          class="w-auto h-[72vh] max-w-[88vw] max-h-[80vh] rounded-2xl shadow-2xl object-contain border border-white/15 bg-slate-900 select-none"
+        />
+      </div>
       <div class="mt-4 text-center space-y-1">
         <div class="text-white font-bold text-sm sm:text-base">
           《{{ fullscreenCoverRecord.title }}》
@@ -1740,8 +2098,7 @@ function getRepeatCount(title: string): number {
           <span>确认退出登录</span>
         </div>
         <p class="text-xs sm:text-sm text-slate-600 leading-relaxed">
-          退出登录将清除本地存储的所有借阅记录、读书笔记、搜索历史与保存的账号密码，并恢复到初始状态。<br />
-          确定继续吗？
+          退出登录将清除本地存储的所有信息。
         </p>
         <div class="flex items-center justify-end gap-2 pt-1">
           <button

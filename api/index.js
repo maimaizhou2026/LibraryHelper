@@ -9591,7 +9591,7 @@ var require_util2 = __commonJS({
   "node_modules/undici/lib/web/fetch/util.js"(exports, module) {
     "use strict";
     var { Transform } = __require("node:stream");
-    var zlib = __require("node:zlib");
+    var zlib2 = __require("node:zlib");
     var { redirectStatusSet, referrerPolicyTokens, badPortsSet } = require_constants3();
     var { getGlobalOrigin } = require_global();
     var { collectAnHTTPQuotedString, parseMIMEType } = require_data_url();
@@ -10194,7 +10194,7 @@ var require_util2 = __commonJS({
             callback();
             return;
           }
-          this._inflateStream = (chunk[0] & 15) === 8 ? zlib.createInflate(this.#zlibOptions) : zlib.createInflateRaw(this.#zlibOptions);
+          this._inflateStream = (chunk[0] & 15) === 8 ? zlib2.createInflate(this.#zlibOptions) : zlib2.createInflateRaw(this.#zlibOptions);
           this._inflateStream.on("data", this.push.bind(this));
           this._inflateStream.on("end", () => this.push(null));
           this._inflateStream.on("error", (err) => this.destroy(err));
@@ -13210,7 +13210,7 @@ var require_client = __commonJS({
     "use strict";
     var assert = __require("node:assert");
     var net = __require("node:net");
-    var http = __require("node:http");
+    var http2 = __require("node:http");
     var util = require_util();
     var { ClientStats } = require_stats();
     var { channels } = require_diagnostics();
@@ -13268,7 +13268,7 @@ var require_client = __commonJS({
     var connectH1 = require_client_h1();
     var connectH2 = require_client_h2();
     var kClosedResolve = Symbol("kClosedResolve");
-    var getDefaultNodeMaxHeaderSize = http && http.maxHeaderSize && Number.isInteger(http.maxHeaderSize) && http.maxHeaderSize > 0 ? () => http.maxHeaderSize : () => {
+    var getDefaultNodeMaxHeaderSize = http2 && http2.maxHeaderSize && Number.isInteger(http2.maxHeaderSize) && http2.maxHeaderSize > 0 ? () => http2.maxHeaderSize : () => {
       throw new InvalidArgumentError("http module not available or http.maxHeaderSize invalid");
     };
     var noop = () => {
@@ -25747,7 +25747,7 @@ var require_fetch = __commonJS({
     } = require_response();
     var { HeadersList } = require_headers();
     var { Request, cloneRequest, getRequestDispatcher, getRequestState } = require_request2();
-    var zlib = __require("node:zlib");
+    var zlib2 = __require("node:zlib");
     var {
       makePolicyContainer,
       clonePolicyContainer,
@@ -26748,28 +26748,28 @@ var require_fetch = __commonJS({
                 for (let i = codings.length - 1; i >= 0; --i) {
                   const coding = codings[i].trim();
                   if (coding === "x-gzip" || coding === "gzip") {
-                    decoders.push(zlib.createGunzip({
+                    decoders.push(zlib2.createGunzip({
                       // Be less strict when decoding compressed responses, since sometimes
                       // servers send slightly invalid responses that are still accepted
                       // by common browsers.
                       // Always using Z_SYNC_FLUSH is what cURL does.
-                      flush: zlib.constants.Z_SYNC_FLUSH,
-                      finishFlush: zlib.constants.Z_SYNC_FLUSH
+                      flush: zlib2.constants.Z_SYNC_FLUSH,
+                      finishFlush: zlib2.constants.Z_SYNC_FLUSH
                     }));
                   } else if (coding === "deflate") {
                     decoders.push(createInflate({
-                      flush: zlib.constants.Z_SYNC_FLUSH,
-                      finishFlush: zlib.constants.Z_SYNC_FLUSH
+                      flush: zlib2.constants.Z_SYNC_FLUSH,
+                      finishFlush: zlib2.constants.Z_SYNC_FLUSH
                     }));
                   } else if (coding === "br") {
-                    decoders.push(zlib.createBrotliDecompress({
-                      flush: zlib.constants.BROTLI_OPERATION_FLUSH,
-                      finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH
+                    decoders.push(zlib2.createBrotliDecompress({
+                      flush: zlib2.constants.BROTLI_OPERATION_FLUSH,
+                      finishFlush: zlib2.constants.BROTLI_OPERATION_FLUSH
                     }));
                   } else if (coding === "zstd" && hasZstd) {
-                    decoders.push(zlib.createZstdDecompress({
-                      flush: zlib.constants.ZSTD_e_continue,
-                      finishFlush: zlib.constants.ZSTD_e_end
+                    decoders.push(zlib2.createZstdDecompress({
+                      flush: zlib2.constants.ZSTD_e_continue,
+                      finishFlush: zlib2.constants.ZSTD_e_end
                     }));
                   } else {
                     decoders.length = 0;
@@ -34225,8 +34225,11 @@ var require_src = __commonJS({
 // src/server/libraryProxy.ts
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 
 // node_modules/cheerio/dist/esm/options.js
 var defaultOpts = {
@@ -35926,11 +35929,11 @@ function getAtomFeed(feedRoot) {
       if (href2) {
         entry.link = href2;
       }
-      const description = fetch2("summary", children2) || fetch2("content", children2);
+      const description = fetch("summary", children2) || fetch("content", children2);
       if (description) {
         entry.description = description;
       }
-      const pubDate = fetch2("updated", children2);
+      const pubDate = fetch("updated", children2);
       if (pubDate) {
         entry.pubDate = new Date(pubDate);
       }
@@ -35944,7 +35947,7 @@ function getAtomFeed(feedRoot) {
     feed.link = href;
   }
   addConditionally(feed, "description", "subtitle", childs);
-  const updated = fetch2("updated", childs);
+  const updated = fetch("updated", childs);
   if (updated) {
     feed.updated = new Date(updated);
   }
@@ -35964,7 +35967,7 @@ function getRssFeed(feedRoot) {
       addConditionally(entry, "title", "title", children2);
       addConditionally(entry, "link", "link", children2);
       addConditionally(entry, "description", "description", children2);
-      const pubDate = fetch2("pubDate", children2) || fetch2("dc:date", children2);
+      const pubDate = fetch("pubDate", children2) || fetch("dc:date", children2);
       if (pubDate)
         entry.pubDate = new Date(pubDate);
       return entry;
@@ -35973,7 +35976,7 @@ function getRssFeed(feedRoot) {
   addConditionally(feed, "title", "title", childs);
   addConditionally(feed, "link", "link", childs);
   addConditionally(feed, "description", "description", childs);
-  const updated = fetch2("lastBuildDate", childs);
+  const updated = fetch("lastBuildDate", childs);
   if (updated) {
     feed.updated = new Date(updated);
   }
@@ -36017,11 +36020,11 @@ function getMediaElements(where) {
 function getOneElement(tagName, node) {
   return getElementsByTagName(tagName, node, true, 1)[0];
 }
-function fetch2(tagName, where, recurse = false) {
+function fetch(tagName, where, recurse = false) {
   return textContent(getElementsByTagName(tagName, where, recurse, 1)).trim();
 }
 function addConditionally(obj, prop2, tagName, where, recurse = false) {
-  const val2 = fetch2(tagName, where, recurse);
+  const val2 = fetch(tagName, where, recurse);
   if (val2)
     obj[prop2] = val2;
 }
@@ -48673,6 +48676,13 @@ var import_whatwg_mimetype = __toESM(require_mime_type(), 1);
 // src/server/libraryProxy.ts
 var import_sm_crypto = __toESM(require_src(), 1);
 
+// version.json
+var version_default = {
+  version: "1.1.3",
+  updatedAt: "2026-11-26",
+  description: "\u5728\u7EBF\u641C\u7D22\u300C\u81EA\u52A8\u5F52\u7C7B\u300D\u5F00\u5173\u9ED8\u8BA4\u6539\u4E3A\u5173\u95ED\uFF08\u9ED8\u8BA4\u6309\u56FE\u4E66\u9986\u5B98\u65B9\u63A5\u53E3\u8FD4\u56DE\u539F\u59CB\u987A\u5E8F\u5C55\u793A\uFF0C\u652F\u6301\u624B\u52A8\u5F00\u542F\u540C\u7CFB\u5217\u5377\u53F7\u5F52\u7C7B\uFF09"
+};
+
 // addr/zjlib_branches.json
 var zjlib_branches_default = {
   library: "zjlib",
@@ -49530,66 +49540,875 @@ function getLibraryBranchPriority(library, libName, location = "") {
 }
 
 // src/server/libraryProxy.ts
-var latestHzlibSyncCache = null;
-var lastHzlibSessionCookie = "";
+var DEFAULT_BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+function buildBrowserHeaders(targetUrl, rawHeaders) {
+  const headers = {
+    "User-Agent": DEFAULT_BROWSER_UA,
+    Accept: "application/json, text/plain, text/html, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    Connection: "keep-alive"
+  };
+  const host = targetUrl.hostname.toLowerCase();
+  if (host.includes("zjlib.cn")) {
+    headers.Origin = "https://www.zjlib.cn";
+    headers.Referer = "https://www.zjlib.cn/";
+  } else if (host.includes("zjhzlib.cn")) {
+    headers.Origin = `${targetUrl.protocol}//${targetUrl.host}`;
+    headers.Referer = `${targetUrl.protocol}//${targetUrl.host}/opac/reader/login`;
+  }
+  if (rawHeaders) {
+    for (const [k, v] of Object.entries(rawHeaders)) {
+      if (v !== void 0 && v !== null) {
+        headers[k] = String(v);
+      }
+    }
+  }
+  return headers;
+}
+function decompressBody(buf, encoding) {
+  const enc = (encoding || "").toLowerCase().trim();
+  try {
+    if (enc === "gzip" || enc === "x-gzip") return zlib.gunzipSync(buf);
+    if (enc === "deflate") return zlib.inflateSync(buf);
+    if (enc === "br") return zlib.brotliDecompressSync(buf);
+  } catch {
+  }
+  return buf;
+}
+function shouldAllowRelaxedTls(hostname) {
+  const h = (hostname || "").toLowerCase();
+  return h.endsWith("zjhzlib.cn") || h.endsWith("dataesb.com");
+}
+function isSafePublicHttpUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== "string") return false;
+  if (rawUrl.startsWith("/api/covers/zjlib-image?")) return true;
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    if (u.hash.startsWith("#hd=")) {
+      try {
+        const hdDecoded = decodeURIComponent(u.hash.slice(4));
+        if (hdDecoded && !isSafePublicHttpUrl(hdDecoded)) return false;
+      } catch {
+        return false;
+      }
+    }
+    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (!host || host === "localhost" || host === "0.0.0.0" || host === "::1" || host.endsWith(".local") || host.endsWith(".internal")) {
+      return false;
+    }
+    if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host)) {
+      return false;
+    }
+    const m172 = host.match(/^172\.(\d+)\./);
+    if (m172) {
+      const second = Number(m172[1]);
+      if (second >= 16 && second <= 31) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+function singleNodeHttpRequest(urlStr, init, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    const targetUrl = new URL(urlStr);
+    const reqStartAt = Date.now();
+    const wrapUpstreamErr = (rawErr) => {
+      const errObj = rawErr instanceof Error ? rawErr : new Error(String(rawErr || "Upstream Error"));
+      return Object.assign(errObj, {
+        upstreamHost: targetUrl.hostname,
+        upstreamElapsedMs: Date.now() - reqStartAt
+      });
+    };
+    const isHttps = targetUrl.protocol === "https:";
+    const method = (init?.method || "GET").toUpperCase();
+    const headers = buildBrowserHeaders(targetUrl, init?.headers);
+    const bodyBuf = init?.body !== void 0 ? Buffer.isBuffer(init.body) ? init.body : Buffer.from(String(init.body), "utf8") : void 0;
+    if (bodyBuf && !headers["Content-Length"] && !headers["content-length"]) {
+      headers["Content-Length"] = String(bodyBuf.byteLength);
+    }
+    const reqFn = isHttps ? https.request : http.request;
+    const allowRelaxedTls = Boolean(init?.relaxTls) || shouldAllowRelaxedTls(targetUrl.hostname);
+    const req = reqFn(
+      targetUrl,
+      {
+        method,
+        headers,
+        family: 4,
+        rejectUnauthorized: !allowRelaxedTls,
+        timeout: init?.timeoutMs || 15e3
+      },
+      (res) => {
+        const status = res.statusCode || 200;
+        const rawSetCookie = res.headers["set-cookie"];
+        const setCookieList = Array.isArray(rawSetCookie) ? rawSetCookie : rawSetCookie ? [String(rawSetCookie)] : [];
+        if (init?.redirect !== "manual" && [301, 302, 303, 307, 308].includes(status) && res.headers.location && redirectCount < 5) {
+          res.resume();
+          const nextUrl = new URL(res.headers.location, targetUrl).toString();
+          const nextMethod = status === 303 ? "GET" : method;
+          singleNodeHttpRequest(
+            nextUrl,
+            {
+              ...init,
+              method: nextMethod,
+              body: nextMethod === "GET" ? void 0 : init?.body
+            },
+            redirectCount + 1
+          ).then(resolve).catch(reject);
+          return;
+        }
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => {
+          const rawBuf = Buffer.concat(chunks);
+          const decodedBuf = decompressBody(rawBuf, String(res.headers["content-encoding"] || ""));
+          const lowerHeaders = {};
+          for (const [hk, hv] of Object.entries(res.headers)) {
+            if (hv !== void 0) {
+              lowerHeaders[hk.toLowerCase()] = Array.isArray(hv) ? hv.join(", ") : String(hv);
+            }
+          }
+          resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            headers: {
+              get(name) {
+                return lowerHeaders[name.toLowerCase()] ?? null;
+              },
+              getSetCookie() {
+                return setCookieList;
+              }
+            },
+            async text() {
+              return decodedBuf.toString("utf8");
+            },
+            async json() {
+              const txt = decodedBuf.toString("utf8");
+              return txt ? JSON.parse(txt) : {};
+            },
+            async arrayBuffer() {
+              return decodedBuf.buffer.slice(
+                decodedBuf.byteOffset,
+                decodedBuf.byteOffset + decodedBuf.byteLength
+              );
+            }
+          });
+        });
+        res.on("error", (e) => reject(wrapUpstreamErr(e)));
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy(
+        wrapUpstreamErr(
+          Object.assign(new Error(`\u8FDE\u63A5\u4E0A\u6E38\u670D\u52A1\u5668\u8D85\u65F6 (${targetUrl.hostname})`), {
+            code: "ETIMEDOUT"
+          })
+        )
+      );
+    });
+    req.on("error", (e) => reject(wrapUpstreamErr(e)));
+    if (bodyBuf) {
+      req.write(bodyBuf);
+    }
+    req.end();
+  });
+}
+async function upstreamFetch(urlInput, init) {
+  const primaryUrl = String(urlInput);
+  const candidateUrls = [primaryUrl];
+  if (primaryUrl.includes("://my1.zjhzlib.cn/")) {
+    candidateUrls.push(primaryUrl.replace("://my1.zjhzlib.cn/", "://opac.zjhzlib.cn/"));
+  } else if (primaryUrl.includes("://opac.zjhzlib.cn/")) {
+    candidateUrls.push(primaryUrl.replace("://opac.zjhzlib.cn/", "://my1.zjhzlib.cn/"));
+  }
+  let lastError = null;
+  for (const candidateUrl of candidateUrls) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const isCertErr = lastError && /CERT|UNABLE_TO_VERIFY|SELF_SIGNED|TLS/i.test(
+          String(lastError?.code || lastError?.message || "")
+        );
+        return await singleNodeHttpRequest(candidateUrl, {
+          ...init,
+          relaxTls: attempt > 0 && isCertErr
+        });
+      } catch (err) {
+        lastError = err;
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+    }
+  }
+  throw lastError || new Error(`\u8BF7\u6C42\u4E0A\u6E38\u5931\u8D25: ${primaryUrl}`);
+}
+var MAX_DIAGNOSTIC_ERRORS = 30;
+var recentDiagnosticErrors = [];
+function sanitizeDiagnosticText(raw) {
+  if (!raw) return "";
+  return String(raw).replace(/(JSESSIONID|token|password|rdPasswd|rdLoginId|account|cookie)\s*[=:]\s*[^\s;&,]+/gi, "$1=[REDACTED]").replace(/\b[A-Za-z0-9+/=_.-]{8,}\b/g, (token) => {
+    if (/^(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|NETWORK_ERROR|TIMEOUT|HTTP_\d+)$/i.test(
+      token
+    ) || /^(www\.zjlib\.cn|my1\.zjhzlib\.cn|opac\.zjhzlib\.cn|book-resource\.dataesb\.com|map\.baidu\.com|image\.baidu\.com)$/i.test(
+      token
+    )) {
+      return token;
+    }
+    return "[REDACTED]";
+  }).slice(0, 240);
+}
+function formatUpstreamError(err, fallbackTitle, req, route) {
+  const code = err?.cause?.code || err?.code || "";
+  const rawMsg = err?.cause?.message || err?.message || "";
+  const upstreamHost = String(err?.upstreamHost || "");
+  const upstreamElapsedMs = Number(err?.upstreamElapsedMs || 0);
+  const reqId = String(req?.__reqId || crypto.randomBytes(3).toString("hex"));
+  const reqDurationMs = req?.__startAt ? Date.now() - Number(req.__startAt) : upstreamElapsedMs;
+  const region = process.env.VERCEL_REGION || "local";
+  const targetRoute = String(route || req?.__route || "/api/unknown");
+  const detailParts = [];
+  if (code) detailParts.push(String(code));
+  if (upstreamHost) detailParts.push(upstreamHost);
+  if (upstreamElapsedMs > 0) detailParts.push(`${upstreamElapsedMs}ms`);
+  const detailSuffix = detailParts.length > 0 ? ` (${detailParts.join(", ")})` : "";
+  const diagTag = `[v${version_default.version} \xB7 ${region}#${reqId}]`;
+  let userMessage = "";
+  if (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT" || rawMsg.includes("\u8D85\u65F6")) {
+    userMessage = `${fallbackTitle}\uFF1A\u8FDE\u63A5\u56FE\u4E66\u9986\u5B98\u65B9\u670D\u52A1\u5668\u8D85\u65F6${detailSuffix || " (TIMEOUT)"}\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5 ${diagTag}`;
+  } else if (code === "ECONNRESET" || code === "ECONNREFUSED" || code === "EPIPE") {
+    userMessage = `${fallbackTitle}\uFF1A\u56FE\u4E66\u9986\u670D\u52A1\u5668\u91CD\u7F6E\u4E86\u8FDE\u63A5${detailSuffix}\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5 ${diagTag}`;
+  } else if (rawMsg === "fetch failed") {
+    userMessage = `${fallbackTitle}\uFF1A\u4E0A\u6E38\u56FE\u4E66\u9986\u7F51\u7EDC\u8FDE\u63A5\u5931\u8D25${detailSuffix || " (NETWORK_ERROR)"}\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5 ${diagTag}`;
+  } else {
+    const cleanRaw = sanitizeDiagnosticText(rawMsg);
+    userMessage = cleanRaw ? `${fallbackTitle}\uFF1A${cleanRaw}${detailSuffix} ${diagTag}` : `${fallbackTitle}${detailSuffix} ${diagTag}`;
+  }
+  const diagEntry = {
+    reqId,
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    route: targetRoute,
+    version: version_default.version,
+    region,
+    upstreamHost: upstreamHost || "none",
+    errorCode: String(code || (err?.statusCode ? `HTTP_${err.statusCode}` : "ERR_UNKNOWN")),
+    durationMs: reqDurationMs,
+    message: sanitizeDiagnosticText(rawMsg || fallbackTitle)
+  };
+  recentDiagnosticErrors.unshift(diagEntry);
+  if (recentDiagnosticErrors.length > MAX_DIAGNOSTIC_ERRORS) {
+    recentDiagnosticErrors.length = MAX_DIAGNOSTIC_ERRORS;
+  }
+  console.error("[LibraryHelperDiag]", JSON.stringify(diagEntry));
+  return userMessage;
+}
+var fetch2 = upstreamFetch;
 var coverMemoryCache = null;
 var ZJLIB_SM2_PUBLIC_KEY = "0482ddef5f3839bc64562d7f88782be9923785a5f05beaa25c9e8932d6591aa50b47f27aa9595f98ff80e88c1751b95bc9554de41874b37cb4b50028e4cf0ac0e1";
 var ZJLIB_ORG_ID = "1916318653650423810";
 var ZJLIB_API_BASE = "https://www.zjlib.cn/bff-api";
 var COVER_CACHE_FILE = path.resolve(process.cwd(), ".cover-cache.json");
 var FALLBACK_COVER_CACHE_FILE = path.join(os.tmpdir(), "library-helper-cover-cache.json");
-async function loadCoverCache() {
-  if (coverMemoryCache) return coverMemoryCache;
-  try {
-    const txt = await fs.readFile(COVER_CACHE_FILE, "utf8");
-    coverMemoryCache = JSON.parse(txt) || {};
-  } catch {
+var MAX_COVER_CACHE_ENTRIES = 3e3;
+var coverCacheWriteChain = Promise.resolve();
+var coverCacheMtimeMs = 0;
+function repairCoverUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== "string") return "";
+  const cleaned = rawUrl.trim().replace(/^\/\//, "https://").replace(/^http:\/\//i, "https://").replace(/(&f=(?:JPEG|PNG|GIF|WEBP))=240=320(?:\?fmt=auto)?/gi, "$1?w=600&h=820");
+  if (cleaned.includes("#hd=")) {
+    const [basePart, hdRaw] = cleaned.split("#hd=");
     try {
-      const fallbackTxt = await fs.readFile(FALLBACK_COVER_CACHE_FILE, "utf8");
-      coverMemoryCache = JSON.parse(fallbackTxt) || {};
+      const hdDecoded = decodeURIComponent(hdRaw || "");
+      if (/\.(?:360buyimg\.com|winxuancdn\.com|bookuu\.com)\//i.test(hdDecoded) || /book-resource\.dataesb\.com\/cover\/(?:p|medium)\//i.test(hdDecoded)) {
+        return hdDecoded.replace(/^http:\/\//i, "https://").replace(/(\.360buyimg\.com)\/n\d+\/(?:s\d+x\d+_)?/i, "$1/n0/");
+      }
     } catch {
-      coverMemoryCache = {};
     }
+    return basePart;
+  }
+  return cleaned;
+}
+function createSafeCacheMap(initial) {
+  const safeMap = /* @__PURE__ */ Object.create(null);
+  if (initial && typeof initial === "object") {
+    for (const [k, v] of Object.entries(initial)) {
+      const fixed = typeof v === "string" ? repairCoverUrl(v) : "";
+      if (k && k !== "__proto__" && k !== "constructor" && k !== "prototype" && fixed && isSafePublicHttpUrl(fixed) && !isPlaceholderCoverUrl(fixed)) {
+        safeMap[k] = fixed;
+      }
+    }
+  }
+  return safeMap;
+}
+function setCoverCacheEntry(cache, key, url) {
+  const fixed = repairCoverUrl(url);
+  if (!key || key === "__proto__" || key === "constructor" || key === "prototype" || !isSafePublicHttpUrl(fixed) || isPlaceholderCoverUrl(fixed)) {
+    return;
+  }
+  if (!(key in cache)) {
+    const keys = Object.keys(cache);
+    if (keys.length >= MAX_COVER_CACHE_ENTRIES) {
+      const evictCount = Math.max(1, keys.length - MAX_COVER_CACHE_ENTRIES + 50);
+      for (let i = 0; i < evictCount; i++) {
+        delete cache[keys[i]];
+      }
+    }
+  }
+  cache[key] = fixed;
+}
+async function loadCoverCache() {
+  try {
+    const st = await fs.stat(COVER_CACHE_FILE);
+    if (coverMemoryCache && st.mtimeMs === coverCacheMtimeMs) {
+      return coverMemoryCache;
+    }
+    const txt = await fs.readFile(COVER_CACHE_FILE, "utf8");
+    coverMemoryCache = createSafeCacheMap(JSON.parse(txt));
+    coverCacheMtimeMs = st.mtimeMs;
+    return coverMemoryCache;
+  } catch {
+    if (coverMemoryCache) return coverMemoryCache;
+  }
+  try {
+    const fallbackTxt = await fs.readFile(FALLBACK_COVER_CACHE_FILE, "utf8");
+    coverMemoryCache = createSafeCacheMap(JSON.parse(fallbackTxt));
+  } catch {
+    coverMemoryCache = createSafeCacheMap();
   }
   return coverMemoryCache;
 }
 async function saveCoverCache(cache) {
   coverMemoryCache = cache;
-  try {
-    await fs.writeFile(COVER_CACHE_FILE, JSON.stringify(cache, null, 2), "utf8");
-  } catch {
+  const serialized = JSON.stringify(cache, null, 2);
+  coverCacheWriteChain = coverCacheWriteChain.then(async () => {
+    const writeAtomically = async (targetPath) => {
+      const tmpPath = `${targetPath}.${process.pid}.tmp`;
+      await fs.writeFile(tmpPath, serialized, "utf8");
+      await fs.rename(tmpPath, targetPath);
+    };
     try {
-      await fs.writeFile(FALLBACK_COVER_CACHE_FILE, JSON.stringify(cache, null, 2), "utf8");
+      await writeAtomically(COVER_CACHE_FILE);
+      const st = await fs.stat(COVER_CACHE_FILE).catch(() => null);
+      if (st) coverCacheMtimeMs = st.mtimeMs;
     } catch {
+      try {
+        await writeAtomically(FALLBACK_COVER_CACHE_FILE);
+      } catch {
+      }
     }
-  }
+  });
+  return coverCacheWriteChain;
 }
 function isPlaceholderCoverUrl(url) {
   if (!url) return true;
-  return url.includes("5133167f051e4f9a8c8797b35577ef4f") || url.includes("3593b961f9094da9887a8cbb2105d18c") || url.includes("fbc18786cafb44babc3b3b666bb0710c") || url.includes("1a8b6e68853e4278bd05ed5a05844deb") || url.includes("tc-cover-prod.oss") || url.includes("xinhuapic.oss") || url.includes("doubanio.com") || url.endsWith(".null");
+  const lower = url.toLowerCase();
+  return lower.includes("d9fa61ec5b294296a2a53bfe5a167c91") || lower.includes("fb87c5fae030416d8f9629c56451e355") || lower.includes("5133167f051e4f9a8c8797b35577ef4f") || lower.includes("3593b961f9094da9887a8cbb2105d18c") || lower.includes("fbc18786cafb44babc3b3b666bb0710c") || lower.includes("1a8b6e68853e4278bd05ed5a05844deb") || lower.includes("1196498018,785825342") || lower.includes("1809027890,2934023687") || lower.includes("bigbg.png") || lower.includes("default_book") || lower.includes("no_pic") || lower.includes("nopic") || lower.includes("zanwu") || lower.includes("xinhuapic.oss") || lower.includes("doubanio.com") || lower.includes("openbookscan.com.cn:1235") || lower.includes("=240=320") || lower.endsWith(".null");
 }
-async function searchInternetBookCover(title, author) {
-  const cleanTitle = title.replace(/[《》「」【】]/g, " ").trim();
-  const cleanAuthor = author.replace(/\[.*?\]|\(.*?\)|（.*?）|著|绘|编|译/g, " ").trim();
-  const queries = [
-    `${cleanTitle} ${cleanAuthor} \u56FE\u4E66\u5C01\u9762`.trim(),
-    `${cleanTitle} \u4E66\u7C4D\u5C01\u9762`.trim()
-  ];
-  for (const q of queries) {
-    try {
-      const bdUrl = `https://image.baidu.com/search/acjson?tn=resultjson_com&ipn=rj&ct=201326592&fp=result&word=${encodeURIComponent(q)}&pn=0&rn=5`;
-      const bdJson = await fetch(bdUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          Referer: "https://image.baidu.com/"
-        }
-      }).then((r) => r.json());
-      const candidates = (bdJson?.data || []).filter(
-        (d) => (d?.thumbURL || d?.middleURL) && !isPlaceholderCoverUrl(String(d?.thumbURL || d?.middleURL || ""))
+var COVER_CN_DIGITS = {
+  \u4E00: 1,
+  \u4E8C: 2,
+  \u4E24: 2,
+  \u4E09: 3,
+  \u56DB: 4,
+  \u4E94: 5,
+  \u516D: 6,
+  \u4E03: 7,
+  \u516B: 8,
+  \u4E5D: 9,
+  \u5341: 10,
+  \u58F9: 1,
+  \u8D30: 2,
+  \u53C1: 3,
+  \u8086: 4,
+  \u4F0D: 5,
+  \u9646: 6,
+  \u67D2: 7,
+  \u634C: 8,
+  \u7396: 9,
+  \u62FE: 10,
+  "\u2160": 1,
+  "\u2161": 2,
+  "\u2162": 3,
+  "\u2163": 4,
+  "\u2164": 5,
+  "\u2165": 6,
+  "\u2166": 7,
+  "\u2167": 8,
+  "\u2168": 9,
+  "\u2169": 10
+};
+var COVER_NUM_TO_CN_PAT = {
+  "1": "\u4E00|\u58F9|\u2160|I",
+  "2": "\u4E8C|\u8D30|\u2161|II",
+  "3": "\u4E09|\u53C1|\u2162|III",
+  "4": "\u56DB|\u8086|\u2163|IV",
+  "5": "\u4E94|\u4F0D|\u2164|V",
+  "6": "\u516D|\u9646|\u2165|VI",
+  "7": "\u4E03|\u67D2|\u2166|VII",
+  "8": "\u516B|\u634C|\u2167|VIII",
+  "9": "\u4E5D|\u7396|\u2168|IX",
+  "10": "\u5341|\u62FE|\u2169|X",
+  "11": "\u5341\u4E00|\u62FE\u58F9",
+  "12": "\u5341\u4E8C|\u62FE\u8D30",
+  "13": "\u5341\u4E09|\u62FE\u53C1",
+  "14": "\u5341\u56DB|\u62FE\u8086",
+  "15": "\u5341\u4E94|\u62FE\u4F0D"
+};
+var COVER_ROMAN_TO_NUM = {
+  I: "1",
+  II: "2",
+  III: "3",
+  IV: "4",
+  V: "5",
+  VI: "6",
+  VII: "7",
+  VIII: "8",
+  IX: "9",
+  X: "10",
+  "\u2160": "1",
+  "\u2161": "2",
+  "\u2162": "3",
+  "\u2163": "4",
+  "\u2164": "5",
+  "\u2165": "6",
+  "\u2166": "7",
+  "\u2167": "8",
+  "\u2168": "9",
+  "\u2169": "10"
+};
+function numberToChineseVolumePattern(volNumStr) {
+  if (COVER_NUM_TO_CN_PAT[volNumStr]) return COVER_NUM_TO_CN_PAT[volNumStr];
+  const n = parseInt(volNumStr, 10);
+  if (!Number.isFinite(n) || n <= 0 || n >= 200) return "";
+  const cnDigits = ["", "\u4E00", "\u4E8C", "\u4E09", "\u56DB", "\u4E94", "\u516D", "\u4E03", "\u516B", "\u4E5D"];
+  const capDigits = ["", "\u58F9", "\u8D30", "\u53C1", "\u8086", "\u4F0D", "\u9646", "\u67D2", "\u634C", "\u7396"];
+  if (n < 10) return `${cnDigits[n]}|${capDigits[n]}`;
+  if (n === 10) return "\u5341|\u62FE";
+  if (n < 20) {
+    const u = n % 10;
+    return `\u5341${cnDigits[u]}|\u62FE${capDigits[u]}`;
+  }
+  if (n < 100) {
+    const tens = Math.floor(n / 10);
+    const units = n % 10;
+    const norm = `${cnDigits[tens]}\u5341${units ? cnDigits[units] : ""}`;
+    const cap = `${capDigits[tens]}\u62FE${units ? capDigits[units] : ""}`;
+    return `${norm}|${cap}`;
+  }
+  return "";
+}
+function parseCoverVolumeToken(raw) {
+  const s = String(raw || "").trim().toUpperCase();
+  if (!s) return "";
+  if (/^\d+$/.test(s)) return String(parseInt(s, 10));
+  if (COVER_ROMAN_TO_NUM[s]) return COVER_ROMAN_TO_NUM[s];
+  let total = 0;
+  let cur = 0;
+  for (const ch of s) {
+    if (ch === "\u5341" || ch === "\u62FE") {
+      total += (cur || 1) * 10;
+      cur = 0;
+    } else if (COVER_CN_DIGITS[ch] !== void 0) {
+      cur = COVER_CN_DIGITS[ch];
+    }
+  }
+  const val2 = total + cur;
+  return val2 > 0 ? String(val2) : "";
+}
+function extractCoverSearchMeta(rawTitle, rawAuthor = "", rawPublisher = "", rawIsbn = "") {
+  const cleanIsbn = String(rawIsbn || "").replace(/[^0-9Xx]/g, "").toUpperCase();
+  const cleanTitle = String(rawTitle || "").replace(/[《》「」【】]/g, " ").replace(/[．·:：；;，,]/g, " ").replace(/\s+/g, " ").trim();
+  const sepParts = String(rawTitle || "").replace(/[《》「」【】]/g, "").split(/[．·:：—(（]/).map((s) => s.trim()).filter(Boolean);
+  const baseTitle = (sepParts[0] || cleanTitle).replace(
+    /\s+(?:上|中|下|全集|全一册|第?[0-9一二三四五六七八九十百壹贰叁肆伍陆柒捌玖拾]+[卷集册部辑篇回]).*$/g,
+    ""
+  ).trim();
+  let subSeries = "";
+  for (const seg of sepParts.slice(1)) {
+    if (/^(?:总集篇|专题书|外传|番外|前传|后传|剧场版|公式书|资料集|设定集)$/.test(seg)) {
+      subSeries = seg;
+      break;
+    }
+  }
+  let partToken = "";
+  if (/(?:^|[\s．·:：,，（(])(?:全集|全一册|大全集|合订本)(?:[\s．·:：,，）)]|$)/.test(rawTitle)) {
+    partToken = "\u5168\u96C6";
+  } else if (/(?:^|[\s．·:：,，（(])上[册卷集部]?(?:[\s．·:：,，）)]|$)/.test(rawTitle)) {
+    partToken = "\u4E0A";
+  } else if (/(?:^|[\s．·:：,，（(])中[册卷集部]?(?:[\s．·:：,，）)]|$)/.test(rawTitle)) {
+    partToken = "\u4E2D";
+  } else if (/(?:^|[\s．·:：,，（(])下[册卷集部]?(?:[\s．·:：,，）)]|$)/.test(rawTitle)) {
+    partToken = "\u4E0B";
+  }
+  let volNumber = "";
+  const explicitVol = String(rawTitle || "").match(
+    /[卷集册部辑]\s*第?\s*(\d+|[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|\b(?:I|II|III|IV|V|VI|VII|VIII|IX|X)\b)/i
+  ) || String(rawTitle || "").match(
+    /第?\s*(\d+|[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)\s*[卷集册部辑]/
+  );
+  if (explicitVol && explicitVol[1]) {
+    volNumber = parseCoverVolumeToken(explicitVol[1]);
+  } else {
+    for (const seg of sepParts.slice(1)) {
+      const m = seg.match(
+        /^(\d+|[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|(?:I|II|III|IV|V|VI|VII|VIII|IX|X))(?=\s*[，,．.：:\s]|$)/i
       );
-      if (candidates.length > 0) {
-        const chosen = candidates[0];
-        return String(chosen.thumbURL || chosen.middleURL).replace(/^http:\/\//i, "https://");
+      if (m && m[1]) {
+        volNumber = parseCoverVolumeToken(m[1]);
+        break;
+      }
+    }
+  }
+  const cleanAuthor = String(rawAuthor || "").replace(
+    /\[.*?\]|\(.*?\)|（.*?）|原著|主编|编著|改写|著|绘|编|译|撰|[[\]()（）【】「」;；,，/]/g,
+    " "
+  ).replace(/\s+/g, " ").trim().split(" ")[0] || "";
+  const cleanPublisher = String(rawPublisher || "").replace(
+    /\[.*?\]|\(.*?\)|（.*?）|\d{4}(?:[.\-/年]\d{1,2}(?:[.\-/月]\d{1,2}日?)?)?|[[\]()（）【】「」;；,，/]/g,
+    " "
+  ).replace(/\s+/g, " ").trim().split(" ")[0] || "";
+  return {
+    rawTitle,
+    cleanTitle,
+    baseTitle,
+    subSeries,
+    partToken,
+    volNumber,
+    cleanAuthor,
+    cleanPublisher,
+    cleanIsbn
+  };
+}
+function normalizeTrustedHdImageUrl(rawUrl) {
+  const url = repairCoverUrl(rawUrl);
+  if (!url || !isSafePublicHttpUrl(url) || isPlaceholderCoverUrl(url)) return "";
+  const isDirectImg = /\.(?:jpe?g|png|webp)(?:[?!].*)?$/i.test(url) || /gips\d\.baidu\.com\/it\/u=/i.test(url) || /pic\.rmb\.bdstatic\.com\//i.test(url);
+  if (!isDirectImg) return "";
+  const trustedHost = /\.(?:360buyimg\.com|winxuancdn\.com|bookuu\.com|alicdn\.com|baidu\.com|bdstatic\.com|kfzimg\.com|zdmimg\.com|smzdm\.com|myqcloud\.com|qq\.com|zhimg\.com)\//i.test(
+    url
+  );
+  if (!trustedHost) return "";
+  if (url.includes(".360buyimg.com/")) {
+    return url.replace(/(\.360buyimg\.com)\/n\d+\/(?:s\d+x\d+_)?/i, "$1/n0/");
+  }
+  if (url.includes(".winxuancdn.com/")) {
+    return url.split("?")[0];
+  }
+  return url;
+}
+function parseImageDimensionsFromBuffer(buf) {
+  if (!buf || buf.length < 24) return null;
+  if (buf[0] === 137 && buf[1] === 80 && buf[2] === 78 && buf[3] === 71) {
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  }
+  if (buf[0] === 255 && buf[1] === 216) {
+    let offset = 2;
+    while (offset + 9 < buf.length) {
+      if (buf[offset] !== 255) {
+        offset++;
+        continue;
+      }
+      const marker = buf[offset + 1];
+      if (marker === 255) {
+        offset++;
+        continue;
+      }
+      if (marker === 216 || marker === 217 || marker >= 208 && marker <= 215) {
+        offset += 2;
+        continue;
+      }
+      const segLen = buf.readUInt16BE(offset + 2);
+      if (segLen < 2) break;
+      if (marker >= 192 && marker <= 195 || marker >= 197 && marker <= 199 || marker >= 201 && marker <= 203 || marker >= 205 && marker <= 207) {
+        return { height: buf.readUInt16BE(offset + 5), width: buf.readUInt16BE(offset + 7) };
+      }
+      offset += 2 + segLen;
+    }
+  }
+  return null;
+}
+function scoreCoverCandidate(cand, meta) {
+  const rawCandTitle = String(cand.title || "").replace(/<[^>]+>/g, "").replace(/哪咤/g, "\u54EA\u5412");
+  const normCandTitle = rawCandTitle.toLowerCase();
+  const host = String(cand.host || "").toLowerCase();
+  const hd = String(cand.hdUrl || "").toLowerCase();
+  if (/暂无图片|暂无封面|无封面|默认封面|缺货|下架|nopic|no_pic|default_book/.test(normCandTitle) || /电影《|动画电影|剧照|壁纸|表情包|手游|角色立绘|票房/.test(rawCandTitle) || /已消毒|实体仓库|多件更优惠|发货快|可开发票|开具.*发票|图书城|专营店|支持正版|封面有破损|缺页|包退/.test(
+    rawCandTitle
+  )) {
+    return -999;
+  }
+  let score = 0;
+  const normBase = meta.baseTitle.replace(/哪咤/g, "\u54EA\u5412").toLowerCase();
+  if (normBase && normCandTitle.includes(normBase)) {
+    score += 50;
+  } else {
+    score -= 80;
+  }
+  if (meta.subSeries) {
+    if (rawCandTitle.includes(meta.subSeries)) {
+      score += 55;
+    } else {
+      score -= 120;
+    }
+  } else if (/总集篇|专题书/.test(rawCandTitle)) {
+    score -= 75;
+  }
+  if (meta.partToken) {
+    if (meta.partToken === "\u5168\u96C6") {
+      if (/全集|全一册|大全集|合订本/.test(rawCandTitle)) {
+        score += 48;
+      } else if (/系列|全\d*册/.test(rawCandTitle)) {
+        score += 18;
+      } else if (/(?:^|[^上中下])(?:上册|下册|中册|（上）|（下）|\(上\)|\(下\))/.test(rawCandTitle)) {
+        score -= 85;
+      }
+    } else if (meta.partToken === "\u4E0A") {
+      if (/上册|（上）|\(上\)|[．·\s]上(?:[\s，,）)]|$)/.test(rawCandTitle)) {
+        score += 48;
+      } else if (/上下/.test(rawCandTitle)) {
+        score -= 20;
+      } else if (/下册|中册|（下）|（中）|\(下\)|\(中\)|全集|全一册/.test(rawCandTitle)) {
+        score -= 85;
+      }
+    } else if (meta.partToken === "\u4E2D") {
+      if (/中册|（中）|\(中\)|[．·\s]中(?:[\s，,）)]|$)/.test(rawCandTitle)) {
+        score += 48;
+      } else if (/上册|下册|（上）|（下）|\(上\)|\(下\)|全集|全一册/.test(rawCandTitle)) {
+        score -= 85;
+      }
+    } else if (meta.partToken === "\u4E0B") {
+      if (/下册|（下）|\(下\)|[．·\s]下(?:[\s，,）)]|$)/.test(rawCandTitle)) {
+        score += 48;
+      } else if (/上下/.test(rawCandTitle)) {
+        score -= 20;
+      } else if (/上册|中册|（上）|（中）|\(上\)|\(中\)|全集|全一册/.test(rawCandTitle)) {
+        score -= 85;
+      }
+    }
+  }
+  if (meta.volNumber) {
+    const vNum = meta.volNumber;
+    const vCnPat = numberToChineseVolumePattern(vNum);
+    const escapedBase = meta.baseTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const subPat = meta.subSeries ? `(?:\\s*[.\uFF0E\xB7:\uFF1A(\\\uFF08\u3010\\[]?\\s*${meta.subSeries})?` : "";
+    const exactVolRe = new RegExp(
+      `(?:${escapedBase}${subPat}\\s*[.\uFF0E\xB7:\uFF1A(\\\uFF08\u3010\\[]?\\s*0?${vNum}(?:\\D|$)|\u7B2C\\s*0?${vNum}\\s*[\u5377\u96C6\u518C\u90E8\u8F91\u56DE\u7BC7\u5B63]|[\u5377\u96C6\u518C\u90E8\u8F91]\\s*0?${vNum}(?:\\D|$)|(?:^|[\\s.\uFF0E\xB7:\uFF1A(\\\uFF08\u3010\\[])${vNum}(?:\\s*[\u5377\u96C6\u518C\u90E8\u8F91]|\\s*$|[\uFF0C,\uFF1A:\\s)\uFF09\u3011\\]]))` + (vCnPat ? `|(?:${escapedBase}${subPat}\\s*[.\uFF0E\xB7:\uFF1A(\\\uFF08\u3010\\[]?\\s*(?:${vCnPat})(?:[)\uFF09\u3011\\]\uFF1A:\\s\uFF0C,]|$)|\u7B2C\\s*(?:${vCnPat})\\s*[\u5377\u96C6\u518C\u90E8\u8F91\u56DE\u7BC7\u5B63]|[\u5377\u96C6\u518C\u90E8\u8F91]\\s*(?:${vCnPat})|[(\\\uFF08\u3010\\[](?:${vCnPat})[)\uFF09\u3011\\]])` : "")
+    );
+    const bundleRe = /合售|\d+\s*[本册]合|[1一壹]\s*[-~至.、,，]\s*[2二贰3三叁4四肆5五伍6六7七8八9九]|全套|套装|大全集|全\d+[册本]|共[0-9一二三四五六七八九十]+[册本]/;
+    if (bundleRe.test(rawCandTitle)) {
+      score -= 95;
+    } else if (exactVolRe.test(rawCandTitle)) {
+      score += 65;
+    } else {
+      const otherVolMatch = rawCandTitle.match(
+        /(?:第\s*(\d+)\s*[卷集册部辑]|[卷集册部辑]\s*(\d+))/
+      );
+      if (otherVolMatch) {
+        const candVol = otherVolMatch[1] || otherVolMatch[2];
+        if (candVol && candVol !== vNum) {
+          score -= 95;
+        }
+      } else {
+        score -= 70;
+      }
+    }
+  }
+  if (meta.cleanAuthor && meta.cleanAuthor.length >= 2) {
+    if (normCandTitle.includes(meta.cleanAuthor.toLowerCase())) {
+      score += 35;
+    }
+  }
+  if (meta.cleanPublisher && meta.cleanPublisher.length >= 3) {
+    const shortPub = meta.cleanPublisher.replace(/出版社|出版公司|出版集团/g, "");
+    if (normCandTitle.includes(meta.cleanPublisher.toLowerCase()) || shortPub.length >= 2 && normCandTitle.includes(shortPub.toLowerCase())) {
+      score += 42;
+    }
+  }
+  if (meta.cleanIsbn && normCandTitle.includes(meta.cleanIsbn.toLowerCase())) {
+    score += 75;
+  }
+  const isBaiduCpsAd = cand.thumbUrl.includes("fm=224") || cand.thumbUrl.includes("app=112") || /\/\/t1[345]\.baidu\.com\//i.test(cand.thumbUrl);
+  if (/京东自营|当当自营|当当网正版|新华书店|文轩|博库|官方旗舰/.test(rawCandTitle) || hd.includes("360buyimg.com") || hd.includes("winxuancdn.com") || host.includes("baike.baidu.com") || host.includes("douban.com")) {
+    score += 65;
+  } else if (!isBaiduCpsAd && (host.includes("jd.com") || host.includes("\u4EAC\u4E1C") || host.includes("dangdang.com") || host.includes("\u5F53\u5F53"))) {
+    score += 42;
+  } else if (/正版|图书|书籍|出版|连环画/.test(rawCandTitle) || host.includes("kongfz.com") || host.includes("taobao.com") || host.includes("tmall.com") || host.includes("smzdm.com") || host.includes("edu.cn") || host.includes("weread.qq.com") || host.includes("qq.com")) {
+    score += 25;
+  }
+  if (/二手|旧书|闲鱼|转转|实拍|九成新|9成新|8成新|绝版旧书/.test(rawCandTitle)) {
+    score -= 45;
+  }
+  if (isBaiduCpsAd && !/新华文轩|文轩|博库|官方正版|自营|旗舰/.test(rawCandTitle)) {
+    score -= 30;
+  } else if (cand.thumbUrl.includes("fm=253")) {
+    score += 18;
+  }
+  const w = Number(cand.w || 0);
+  const h = Number(cand.h || 0);
+  if (w > 0 && h > 0) {
+    const ratio = h / w;
+    if (ratio >= 1.12 && ratio <= 1.68) {
+      score += 20;
+    } else if (ratio >= 0.95 && ratio < 1.12) {
+      score += 12;
+    } else if (ratio < 0.8 || ratio > 2.2) {
+      score -= 35;
+    }
+    if (w >= 450 && h >= 450) {
+      score += 10;
+    }
+  }
+  if (cand.hdUrl) {
+    score += 12;
+  }
+  return score;
+}
+async function searchInternetBookCover(title, author, publisher = "", isbn = "") {
+  const meta = extractCoverSearchMeta(title, author, publisher, isbn);
+  const normalizedVolTitle = meta.volNumber ? `${meta.baseTitle} ${meta.subSeries} \u7B2C${meta.volNumber}\u5377`.replace(/\s+/g, " ").trim() : meta.cleanTitle;
+  const querySet = /* @__PURE__ */ new Set();
+  if (meta.cleanIsbn) {
+    querySet.add(
+      `${meta.cleanIsbn} ${meta.baseTitle} ${meta.subSeries}`.replace(/\s+/g, " ").trim()
+    );
+    querySet.add(
+      `${normalizedVolTitle} ${meta.cleanAuthor} ${meta.cleanPublisher} \u5C01\u9762`.replace(/\s+/g, " ").trim()
+    );
+    querySet.add(
+      `${meta.cleanTitle} ${meta.cleanAuthor} ${meta.cleanPublisher} \u56FE\u4E66\u5C01\u9762`.replace(/\s+/g, " ").trim()
+    );
+  } else {
+    querySet.add(
+      `${normalizedVolTitle} ${meta.cleanAuthor} ${meta.cleanPublisher} \u56FE\u4E66\u5C01\u9762`.replace(/\s+/g, " ").trim()
+    );
+    querySet.add(
+      `${meta.cleanTitle} ${meta.cleanAuthor} \u4E66\u7C4D\u5C01\u9762`.replace(/\s+/g, " ").trim()
+    );
+  }
+  const queries = [...querySet].filter(Boolean).slice(0, 3);
+  const primaryQueries = queries.slice(0, 2);
+  const fetchBaiduQuery = async (q) => {
+    const list = [];
+    try {
+      const bdUrl = `https://image.baidu.com/search/acjson?tn=resultjson_com&ipn=rj&ct=201326592&fp=result&word=${encodeURIComponent(q)}&pn=0&rn=12`;
+      const rawTxt = await fetch2(bdUrl, {
+        headers: {
+          Accept: "text/plain, */*; q=0.01",
+          "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+          "X-Requested-With": "XMLHttpRequest",
+          Referer: `https://image.baidu.com/search/index?tn=baiduimage&word=${encodeURIComponent(q)}`,
+          "Sec-Fetch-Dest": "empty",
+          "Sec-Fetch-Mode": "cors",
+          "Sec-Fetch-Site": "same-origin"
+        },
+        timeoutMs: 6e3
+      }).then((r) => r.text());
+      try {
+        const bdJson = JSON.parse(rawTxt);
+        for (const d of bdJson?.data || []) {
+          const rawThumb = String(d?.middleURL || d?.thumbURL || d?.hoverURL || "").trim();
+          const thumbUrl = repairCoverUrl(rawThumb);
+          if (!thumbUrl || isPlaceholderCoverUrl(thumbUrl) || !isSafePublicHttpUrl(thumbUrl)) {
+            continue;
+          }
+          const rawObj = String(d?.replaceUrl?.[0]?.ObjURL || d?.replaceUrl?.[0]?.ObjUrl || "").trim();
+          const hdUrl = normalizeTrustedHdImageUrl(rawObj);
+          list.push({
+            title: String(d?.fromPageTitleEnc || d?.fromPageTitle || "").trim(),
+            host: String(d?.fromURLHost || d?.replaceUrl?.[0]?.FromURL || "").trim(),
+            w: Number(d?.width || 0),
+            h: Number(d?.height || 0),
+            thumbUrl,
+            hdUrl
+          });
+        }
+      } catch {
+        const matches = rawTxt.matchAll(/"(?:thumbURL|middleURL)"\s*:\s*"(https?:\\?\/\\?\/[^"]+)"/g);
+        for (const m of matches) {
+          if (m[1]) {
+            const thumbUrl = repairCoverUrl(m[1].replace(/\\\//g, "/"));
+            if (thumbUrl && !isPlaceholderCoverUrl(thumbUrl) && isSafePublicHttpUrl(thumbUrl)) {
+              list.push({
+                title: meta.cleanTitle,
+                host: "",
+                w: 500,
+                h: 667,
+                thumbUrl,
+                hdUrl: ""
+              });
+            }
+          }
+        }
+      }
+    } catch {
+    }
+    return list;
+  };
+  const candidateBatches = await Promise.all(primaryQueries.map((q) => fetchBaiduQuery(q)));
+  const pooledCandidates = [];
+  const seenThumbUrls = /* @__PURE__ */ new Set();
+  for (const batch of candidateBatches) {
+    for (const c of batch) {
+      if (seenThumbUrls.has(c.thumbUrl)) continue;
+      seenThumbUrls.add(c.thumbUrl);
+      pooledCandidates.push(c);
+    }
+  }
+  if (pooledCandidates.length === 0 && queries[2]) {
+    const backupBatch = await fetchBaiduQuery(queries[2]);
+    for (const c of backupBatch) {
+      if (!seenThumbUrls.has(c.thumbUrl)) {
+        seenThumbUrls.add(c.thumbUrl);
+        pooledCandidates.push(c);
+      }
+    }
+  }
+  if (pooledCandidates.length > 0) {
+    const scored = pooledCandidates.map((c) => ({ cand: c, score: scoreCoverCandidate(c, meta) })).filter((x) => x.score > -200).sort((a, b) => b.score - a.score);
+    if (scored.length > 0) {
+      const best = scored[0].cand;
+      return best.thumbUrl;
+    }
+  }
+  for (const q of queries.slice(0, 2)) {
+    try {
+      const bingUrl = `https://www.bing.com/images/async?q=${encodeURIComponent(q)}&first=0&count=10&mmasync=1&cc=cn`;
+      const html3 = await fetch2(bingUrl, {
+        headers: {
+          Referer: "https://cn.bing.com/images/"
+        },
+        timeoutMs: 6e3
+      }).then((r) => r.text());
+      const bingCands = [];
+      const cardMatches = html3.matchAll(/m="([^"]+)"/gi);
+      for (const m of cardMatches) {
+        try {
+          const rawJson = (m[1] || "").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+          const obj = JSON.parse(rawJson);
+          const rawTurl = repairCoverUrl(obj?.turl || "");
+          const hdMurl = normalizeTrustedHdImageUrl(obj?.murl || "");
+          const thumbUrl = hdMurl || rawTurl;
+          if (!thumbUrl || isPlaceholderCoverUrl(thumbUrl) || !isSafePublicHttpUrl(thumbUrl)) {
+            continue;
+          }
+          bingCands.push({
+            title: String(obj?.t || obj?.desc || "").trim(),
+            host: String(obj?.purl || "").trim(),
+            w: 600,
+            h: 800,
+            thumbUrl,
+            hdUrl: hdMurl
+          });
+        } catch {
+        }
+      }
+      if (bingCands.length > 0) {
+        const scored = bingCands.map((c) => ({ cand: c, score: scoreCoverCandidate(c, meta) })).filter((x) => x.score > -200).sort((a, b) => b.score - a.score);
+        if (scored.length > 0) {
+          const best = scored[0].cand;
+          return best.thumbUrl;
+        }
       }
     } catch {
     }
@@ -49788,19 +50607,34 @@ function buildNormalizedHzlibRecords(currentRows, historyRows, renewByBarcode) {
   );
   return { currentRecords, historyRecords };
 }
+var MAX_JSON_BODY_BYTES = 256 * 1024;
 async function readJsonBody(req) {
   if (req.body && typeof req.body === "object") {
     return req.body;
   }
   if (typeof req.body === "string") {
+    if (Buffer.byteLength(req.body, "utf8") > MAX_JSON_BODY_BYTES) {
+      throw Object.assign(new Error("\u8BF7\u6C42\u4F53\u8FC7\u5927\uFF0C\u5DF2\u62D2\u7EDD\u5904\u7406 (\u6700\u5927 256KB)"), { statusCode: 413 });
+    }
     return req.body ? JSON.parse(req.body) : {};
   }
   return new Promise((resolve, reject) => {
     let body = "";
+    let totalBytes = 0;
+    let aborted = false;
     req.on("data", (chunk) => {
-      body += chunk.toString();
+      if (aborted) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      totalBytes += buf.byteLength;
+      if (totalBytes > MAX_JSON_BODY_BYTES) {
+        aborted = true;
+        reject(Object.assign(new Error("\u8BF7\u6C42\u4F53\u8FC7\u5927\uFF0C\u5DF2\u62D2\u7EDD\u5904\u7406 (\u6700\u5927 256KB)"), { statusCode: 413 }));
+        return;
+      }
+      body += buf.toString("utf8");
     });
     req.on("end", () => {
+      if (aborted) return;
       try {
         resolve(body ? JSON.parse(body) : {});
       } catch (e) {
@@ -49809,6 +50643,136 @@ async function readJsonBody(req) {
     });
     req.on("error", reject);
   });
+}
+var PUBLIC_QUERY_CACHE_TTL_MS = 45 * 1e3;
+var MAX_PUBLIC_QUERY_CACHE = 150;
+var publicQueryCache = /* @__PURE__ */ new Map();
+function getPublicQueryCache(key) {
+  const hit = publicQueryCache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt <= Date.now()) {
+    publicQueryCache.delete(key);
+    return null;
+  }
+  return hit.payloadJson;
+}
+function setPublicQueryCache(key, payloadObj) {
+  const now = Date.now();
+  if (publicQueryCache.size >= MAX_PUBLIC_QUERY_CACHE) {
+    for (const [k, v] of publicQueryCache.entries()) {
+      if (v.expiresAt <= now) publicQueryCache.delete(k);
+    }
+    if (publicQueryCache.size >= MAX_PUBLIC_QUERY_CACHE) {
+      const oldestKey = publicQueryCache.keys().next().value;
+      if (oldestKey) publicQueryCache.delete(oldestKey);
+    }
+  }
+  const payloadJson = JSON.stringify(payloadObj);
+  publicQueryCache.set(key, {
+    expiresAt: now + PUBLIC_QUERY_CACHE_TTL_MS,
+    payloadJson
+  });
+  return payloadJson;
+}
+var RATE_LIMIT_WINDOW_MS = 60 * 1e3;
+var rateLimitBuckets = /* @__PURE__ */ new Map();
+function getClientIp(req) {
+  const h = req?.headers || {};
+  const xvff = h["x-vercel-forwarded-for"];
+  if (typeof xvff === "string" && xvff.trim()) {
+    return xvff.split(",")[0].trim();
+  }
+  if (typeof h["x-real-ip"] === "string" && h["x-real-ip"].trim()) {
+    return h["x-real-ip"].trim();
+  }
+  const xff = h["x-forwarded-for"];
+  if (typeof xff === "string" && xff.trim()) {
+    return xff.split(",")[0].trim();
+  }
+  return String(req?.socket?.remoteAddress || "127.0.0.1");
+}
+function checkRateLimit(req, route) {
+  if (route === "/api/health" || route === "/api/version") {
+    return { allowed: true, retryAfterSec: 0 };
+  }
+  const now = Date.now();
+  if (rateLimitBuckets.size > 5e3) {
+    for (const [k, v] of rateLimitBuckets.entries()) {
+      if (v.resetAt <= now) rateLimitBuckets.delete(k);
+    }
+  }
+  const isAuthRoute = route.includes("/sync") || route.includes("/renew") || route.includes("/captcha") || route.includes("/qr");
+  const maxPerMinute = isAuthRoute ? 25 : 80;
+  const bucketKey = `${getClientIp(req)}::${isAuthRoute ? "auth" : "query"}`;
+  const entry = rateLimitBuckets.get(bucketKey);
+  if (!entry || entry.resetAt <= now) {
+    rateLimitBuckets.set(bucketKey, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return { allowed: true, retryAfterSec: 0 };
+  }
+  entry.count += 1;
+  if (entry.count > maxPerMinute) {
+    return {
+      allowed: false,
+      retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1e3))
+    };
+  }
+  return { allowed: true, retryAfterSec: 0 };
+}
+function applyApiSecurityGuard(req, res, route) {
+  const reqId = crypto.randomBytes(3).toString("hex");
+  req.__reqId = reqId;
+  req.__route = route;
+  req.__startAt = Date.now();
+  res.setHeader("X-Request-Id", reqId);
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  if ((req.method || "GET").toUpperCase() === "POST") {
+    const headers = req.headers || {};
+    const secFetchSite = String(headers["sec-fetch-site"] || "").toLowerCase();
+    if (secFetchSite === "cross-site") {
+      res.statusCode = 403;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify({ ok: false, message: "\u5DF2\u62E6\u622A\u8DE8\u7AD9\u8BF7\u6C42 (CSRF Protection)" }));
+      return false;
+    }
+    const origin = String(headers.origin || "").trim();
+    const host = String(headers["x-forwarded-host"] || headers.host || "").trim();
+    if (origin && host) {
+      try {
+        const originHost = new URL(origin).host.toLowerCase();
+        const targetHost = host.split(",")[0].trim().toLowerCase();
+        if (originHost && targetHost && originHost !== targetHost) {
+          res.statusCode = 403;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.end(JSON.stringify({ ok: false, message: "\u8BF7\u6C42\u6765\u6E90\u57DF\u540D\u4E0D\u5339\u914D\uFF0C\u5DF2\u62D2\u7EDD\u8BBF\u95EE" }));
+          return false;
+        }
+      } catch {
+        res.statusCode = 403;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(JSON.stringify({ ok: false, message: "\u975E\u6CD5\u7684 Origin \u8BF7\u6C42\u5934" }));
+        return false;
+      }
+    }
+  }
+  const rate = checkRateLimit(req, route);
+  if (!rate.allowed) {
+    res.statusCode = 429;
+    res.setHeader("Retry-After", String(rate.retryAfterSec));
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(
+      JSON.stringify({
+        ok: false,
+        message: `\u8BF7\u6C42\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7 ${rate.retryAfterSec} \u79D2\u540E\u518D\u8BD5`
+      })
+    );
+    return false;
+  }
+  return true;
 }
 var HZLIB_CAPTCHA_FIELD_NAMES = [
   "returnCode",
@@ -49842,21 +50806,24 @@ var HZLIB_CAPTCHA_FIELD_NAMES = [
   "yzm",
   "checkcode"
 ];
-async function createHzlibCaptchaSession(ua) {
-  const loginRes = await fetch("https://my1.zjhzlib.cn/opac/reader/login", {
+async function createHzlibCaptchaSession(ua, includeCaptchaImage = true) {
+  const loginRes = await fetch2("https://my1.zjhzlib.cn/opac/reader/login", {
     headers: { "User-Agent": ua }
   });
   const setCookies = loginRes.headers.getSetCookie?.() || [loginRes.headers.get("set-cookie") || ""];
   const jsessionMatch = setCookies.join("; ").match(/JSESSIONID=[^;]+/);
   const sessionCookie = jsessionMatch ? jsessionMatch[0] : "";
-  const pemRes = await fetch(
+  const pemRes = await fetch2(
     `https://my1.zjhzlib.cn/opac/certificate/pem?checkCode=${Date.now()}opac`,
     {
       headers: { "User-Agent": ua, Cookie: sessionCookie }
     }
   );
   const pemKey = await pemRes.text();
-  const vcRes = await fetch(
+  if (!includeCaptchaImage) {
+    return { sessionCookie, pemKey, captchaImage: "" };
+  }
+  const vcRes = await fetch2(
     `https://my1.zjhzlib.cn/opac/validateCodeImage?r=${Math.random()}`,
     {
       headers: { "User-Agent": ua, Cookie: sessionCookie }
@@ -49866,14 +50833,80 @@ async function createHzlibCaptchaSession(ua) {
   const captchaImage = `data:image/jpeg;base64,${vcBuf.toString("base64")}`;
   return { sessionCookie, pemKey, captchaImage };
 }
-function registerLibraryApiMiddlewares(server) {
-  server.middlewares.use("/api/health", (_req, res) => {
+function registerLibraryApiMiddlewares(rawServer) {
+  const server = {
+    middlewares: {
+      use(route, fn) {
+        rawServer.middlewares.use(route, async (req, res, next2) => {
+          if (!applyApiSecurityGuard(req, res, route)) return;
+          return await fn(req, res, next2);
+        });
+      }
+    }
+  };
+  server.middlewares.use("/api/version", (_req, res) => {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(
       JSON.stringify({
         ok: true,
+        version: version_default.version,
+        updatedAt: version_default.updatedAt,
+        description: version_default.description,
+        env: process.env.VERCEL ? "vercel" : "local",
+        region: process.env.VERCEL_REGION || "local",
+        serverTime: (/* @__PURE__ */ new Date()).toISOString()
+      })
+    );
+  });
+  server.middlewares.use("/api/health", async (req, res) => {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    const urlObj = new URL(req.url || "", "http://localhost");
+    const probe = urlObj.searchParams.get("probe") === "1";
+    let upstreams = void 0;
+    if (probe) {
+      const targets = [
+        { name: "zjlib_bff", url: "https://www.zjlib.cn/bff-api" },
+        { name: "hzlib_primary", url: "https://my1.zjhzlib.cn/opac/reader/login" },
+        { name: "hzlib_backup", url: "https://opac.zjhzlib.cn/opac/reader/login" }
+      ];
+      upstreams = await Promise.all(
+        targets.map(async (t) => {
+          const t0 = Date.now();
+          try {
+            const r = await singleNodeHttpRequest(t.url, {
+              method: "GET",
+              redirect: "manual",
+              timeoutMs: 6e3
+            });
+            return {
+              name: t.name,
+              host: new URL(t.url).hostname,
+              ok: r.status > 0 && r.status < 500,
+              status: r.status,
+              latencyMs: Date.now() - t0
+            };
+          } catch (e) {
+            return {
+              name: t.name,
+              host: new URL(t.url).hostname,
+              ok: false,
+              status: 0,
+              latencyMs: Date.now() - t0,
+              errorCode: String(e?.code || "ERR")
+            };
+          }
+        })
+      );
+    }
+    res.end(
+      JSON.stringify({
+        ok: true,
         status: "healthy",
-        timestamp: (/* @__PURE__ */ new Date()).toISOString()
+        version: version_default.version,
+        region: process.env.VERCEL_REGION || "local",
+        timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+        recentErrorCount: recentDiagnosticErrors.length,
+        ...probe ? { upstreams, recentErrors: recentDiagnosticErrors } : {}
       })
     );
   });
@@ -49881,8 +50914,9 @@ function registerLibraryApiMiddlewares(server) {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(
       JSON.stringify({
-        ok: Boolean(latestHzlibSyncCache),
-        ...latestHzlibSyncCache || { records: [] }
+        ok: false,
+        records: [],
+        message: "disabled for multi-user isolation"
       })
     );
   });
@@ -49893,7 +50927,7 @@ function registerLibraryApiMiddlewares(server) {
     const fallbackUrl = `https://map.baidu.com/?newmap=1&ie=utf-8&s=${encodeURIComponent(`s&wd=${q}&c=${c}`)}`;
     try {
       const apiUrl = `https://map.baidu.com/?newmap=1&reqflag=pcmap&biz=1&from=webmap&da_par=direct&pcevaname=pc4.1&qt=s&da_src=searchBox.button&wd=${encodeURIComponent(q)}&c=${encodeURIComponent(c)}&pn=0&nn=0`;
-      const r = await fetch(apiUrl, {
+      const r = await fetch2(apiUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
@@ -49914,16 +50948,61 @@ function registerLibraryApiMiddlewares(server) {
     res.setHeader("Location", fallbackUrl);
     res.end();
   });
-  server.middlewares.use("/api/hzlib/captcha", async (_req, res) => {
+  server.middlewares.use("/api/hzlib/captcha", async (req, res) => {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     try {
+      const urlObj = new URL(req.url || "", "http://localhost");
+      const mode = (urlObj.searchParams.get("mode") || "").trim();
       const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
-      const bundle = await createHzlibCaptchaSession(ua);
+      const bundle = await createHzlibCaptchaSession(ua, mode !== "init");
       res.end(JSON.stringify({ ok: true, ...bundle }));
     } catch (err) {
-      res.statusCode = 500;
-      res.end(JSON.stringify({ ok: false, message: err?.message || "\u83B7\u53D6\u9A8C\u8BC1\u7801\u5931\u8D25" }));
+      res.statusCode = err?.statusCode || 500;
+      res.end(
+        JSON.stringify({
+          ok: false,
+          reqId: req.__reqId,
+          message: formatUpstreamError(err, "\u83B7\u53D6\u9A8C\u8BC1\u7801\u5931\u8D25", req, "/api/hzlib/captcha")
+        })
+      );
     }
+  });
+  server.middlewares.use("/api/covers/zjlib-image", async (req, res) => {
+    try {
+      const urlObj = new URL(req.url || "", "http://localhost");
+      const isbn = (urlObj.searchParams.get("isbn") || "").replace(/[^0-9Xx]/g, "").toUpperCase();
+      const bibId = (urlObj.searchParams.get("bibId") || "").trim();
+      if (!isbn && !bibId) {
+        res.statusCode = 400;
+        res.end("Missing isbn or bibId");
+        return;
+      }
+      const zjResp = await fetch2(
+        `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/getCoverImageByIsbn`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "BFF-ORG-ID": ZJLIB_ORG_ID,
+            Origin: "https://www.zjlib.cn",
+            Referer: "https://www.zjlib.cn/"
+          },
+          body: JSON.stringify({ isbn, bibId }),
+          timeoutMs: 5e3
+        }
+      ).then((r) => r.json());
+      const signedUrl = String(zjResp?.data || "").trim();
+      if (zjResp?.code === 200 && signedUrl && isSafePublicHttpUrl(signedUrl)) {
+        res.statusCode = 302;
+        res.setHeader("Cache-Control", "public, max-age=3600");
+        res.setHeader("Location", signedUrl);
+        res.end();
+        return;
+      }
+    } catch {
+    }
+    res.statusCode = 404;
+    res.end("Not Found");
   });
   server.middlewares.use("/api/covers/resolve", async (req, res) => {
     if (req.method !== "POST") {
@@ -49943,38 +51022,210 @@ function registerLibraryApiMiddlewares(server) {
         const cleanIsbn = (item.isbn || "").replace(/[^0-9Xx]/g, "").toUpperCase();
         const title = (item.title || "").trim();
         const author = (item.author || "").trim();
-        const cacheKey = cleanIsbn ? `isbn:${cleanIsbn}` : `title:${title}`;
-        if (!forceInternet && cache[cacheKey] && !isPlaceholderCoverUrl(cache[cacheKey])) {
-          resolvedById[item.id] = cache[cacheKey];
+        const publisher = (item.publisher || "").trim();
+        const meta = extractCoverSearchMeta(title, author, publisher, cleanIsbn);
+        const hasVolOrPart = Boolean(meta.partToken || meta.volNumber);
+        const legacyIsbnKey = cleanIsbn ? `isbn:${cleanIsbn}` : "";
+        const cacheKey = cleanIsbn ? hasVolOrPart ? `isbn:${cleanIsbn}:${title}` : `isbn:${cleanIsbn}` : `title:${title}|${meta.cleanAuthor}|${meta.cleanPublisher}`;
+        const rawHitUrl = cache[cacheKey] || (!hasVolOrPart && legacyIsbnKey ? cache[legacyIsbnKey] : "") || (!hasVolOrPart && cache[`title:${title}`] ? cache[`title:${title}`] : "");
+        const hitUrl = rawHitUrl ? repairCoverUrl(rawHitUrl) : "";
+        if (!forceInternet && hitUrl && !isPlaceholderCoverUrl(hitUrl)) {
+          resolvedById[item.id] = hitUrl;
         } else {
-          unresolved.push({ id: item.id, cleanIsbn, title, author, cacheKey });
+          unresolved.push({
+            id: item.id,
+            cleanIsbn,
+            candidateIsbns: cleanIsbn ? [cleanIsbn] : [],
+            title,
+            author,
+            publisher,
+            cacheKey,
+            legacyIsbnKey,
+            meta
+          });
+        }
+      }
+      const missingIsbnItems = (forceInternet ? [] : unresolved).filter(
+        (u) => (!u.cleanIsbn || Boolean(u.meta.volNumber)) && Boolean(u.title)
+      );
+      if (missingIsbnItems.length > 0) {
+        const zjLookupConcurrency = 6;
+        for (let i = 0; i < missingIsbnItems.length; i += zjLookupConcurrency) {
+          const batch = missingIsbnItems.slice(i, i + zjLookupConcurrency);
+          await Promise.all(
+            batch.map(async (u) => {
+              try {
+                const cleanKw = u.title.replace(/[《》「」【】()（）．·:：；;，,]/g, " ").replace(/\b(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|II|III|IV|VI|VII|VIII|IX|\d+)\b/gi, " ").replace(/\s+[a-zA-Z\s]+$/g, " ").replace(/\s+/g, " ").trim() || u.title;
+                const rawVolPhrase = (u.title.match(
+                  /第?\s*[0-9一二三四五六七八九十百壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[卷集册部辑]|[卷集册部辑]\s*[0-9一二三四五六七八九十百壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+/
+                ) || [""])[0].trim();
+                const volDirectKw = rawVolPhrase && u.meta.baseTitle ? [u.meta.baseTitle, u.meta.subSeries, rawVolPhrase].filter(Boolean).join(" ").trim() : "";
+                const kwSet = [...new Set([volDirectKw, cleanKw].filter(Boolean))];
+                const respList = await Promise.all(
+                  kwSet.map(
+                    (kw) => fetch2(`${ZJLIB_API_BASE}/search-admin-service/open-api/search/pageList`, {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json;charset=UTF-8",
+                        "BFF-ORG-ID": ZJLIB_ORG_ID,
+                        Origin: "https://www.zjlib.cn",
+                        Referer: "https://www.zjlib.cn/ResultList"
+                      },
+                      body: JSON.stringify({
+                        metadataType: "work",
+                        current: 1,
+                        size: 10,
+                        query: [
+                          {
+                            id: 0,
+                            key: "title",
+                            value: kw,
+                            match: "phrase_fuzzy",
+                            condition: "and"
+                          }
+                        ],
+                        sortBy: []
+                      }),
+                      timeoutMs: 4500
+                    }).then((r) => r.json()).catch(() => null)
+                  )
+                );
+                const records = respList.flatMap((r) => r?.data?.records || []);
+                const scoredRecs = records.map((rec) => {
+                  const rTitle = String(
+                    Array.isArray(rec.title) ? rec.title[0] : rec.title || ""
+                  ).trim();
+                  const rPub = String(
+                    Array.isArray(rec.publisher) ? rec.publisher[0] : rec.publisher || ""
+                  ).trim();
+                  const rIsbnRaw = Array.isArray(rec.identifierIsbn) ? rec.identifierIsbn[0] : rec.identifierIsbn || "";
+                  const rIsbn = String(rIsbnRaw).replace(/[^0-9Xx]/g, "").toUpperCase();
+                  if (rIsbn.length < 10) return null;
+                  const rMeta = extractCoverSearchMeta(rTitle, "", rPub, rIsbn);
+                  if (rMeta.baseTitle !== u.meta.baseTitle) return null;
+                  if (rMeta.subSeries !== u.meta.subSeries) return null;
+                  let matchScore = 0;
+                  if (rMeta.baseTitle === u.meta.baseTitle) matchScore += 40;
+                  if (u.meta.volNumber) {
+                    if (rMeta.volNumber === u.meta.volNumber) {
+                      matchScore += 60;
+                      const segCount = rTitle.split(/[．·:：]/).length;
+                      if (segCount <= 2) matchScore += 18;
+                    } else if (rMeta.volNumber && rMeta.volNumber !== u.meta.volNumber) {
+                      return null;
+                    }
+                  }
+                  if (u.meta.partToken && rMeta.partToken === u.meta.partToken) {
+                    matchScore += 50;
+                  }
+                  if (matchScore <= 0) return null;
+                  return { rIsbn, rPub, matchScore };
+                }).filter(Boolean);
+                scoredRecs.sort((a, b) => b.matchScore - a.matchScore);
+                const orderedIsbns = [];
+                for (const sr of scoredRecs) {
+                  if (!orderedIsbns.includes(sr.rIsbn) && orderedIsbns.length < 5) {
+                    orderedIsbns.push(sr.rIsbn);
+                  }
+                  if (!u.publisher && sr.rPub) {
+                    u.publisher = sr.rPub;
+                    u.meta = extractCoverSearchMeta(
+                      u.title,
+                      u.author,
+                      u.publisher,
+                      u.cleanIsbn
+                    );
+                  }
+                }
+                if (u.cleanIsbn && !orderedIsbns.includes(u.cleanIsbn)) {
+                  orderedIsbns.push(u.cleanIsbn);
+                }
+                if (orderedIsbns.length > 0) {
+                  u.candidateIsbns = orderedIsbns;
+                }
+              } catch {
+              }
+            })
+          );
         }
       }
       const isbnsToQuery = [
         ...new Set(
-          (forceInternet ? [] : unresolved).map((u) => u.cleanIsbn).filter((s) => s.length >= 10)
+          (forceInternet ? [] : unresolved).flatMap((u) => u.candidateIsbns).filter((s) => s.length >= 10)
         )
       ];
       const isbnCoverMap = {};
       if (isbnsToQuery.length > 0) {
         try {
           const url = `https://book-resource.dataesb.com/websearch/metares?glc=P1ZJ0571001&cmdACT=getImages&type=0&isbns=${isbnsToQuery.join(",")}&callback=cb`;
-          const txt = await fetch(url, {
-            headers: { "User-Agent": "Mozilla/5.0" }
+          const txt = await fetch2(url, {
+            headers: { "User-Agent": "Mozilla/5.0" },
+            timeoutMs: 6e3
           }).then((r) => r.text());
-          const jsonStr = txt.replace(/^cb\(/, "").replace(/\);?\s*$/, "");
+          const jsonStr = txt.trim().replace(/^cb\(/, "").replace(/\);?\s*$/, "");
           const parsed = JSON.parse(jsonStr);
-          for (const entry of parsed.result || []) {
-            const link = entry.resourceLink || entry.coverlink || "";
-            if (entry.isbn && link && !isPlaceholderCoverUrl(link)) {
-              try {
-                const headRes = await fetch(link, { method: "HEAD" });
-                const len = Number(headRes.headers.get("content-length") || 0);
-                if (headRes.ok && len > 2500 && len !== 13498 && len !== 37458) {
-                  isbnCoverMap[String(entry.isbn).toUpperCase()] = link;
-                }
-              } catch {
+          const groupedByIsbn = {};
+          const rawEntries = Array.isArray(parsed.result) ? parsed.result : [];
+          await Promise.all(
+            rawEntries.map(async (entry) => {
+              const rawCoverLink = String(entry.coverlink || "").trim();
+              if (rawCoverLink && /bigbg\.png|default_book|book-default|no_pic|nopic|zanwu/i.test(rawCoverLink)) {
+                return;
               }
+              const link = repairCoverUrl(entry.resourceLink || rawCoverLink || "");
+              const hdCoverLink = normalizeTrustedHdImageUrl(rawCoverLink);
+              if (entry.isbn && link && isSafePublicHttpUrl(link) && !isPlaceholderCoverUrl(link)) {
+                try {
+                  const probeRes = await fetch2(link, {
+                    method: "GET",
+                    headers: { Range: "bytes=0-4095", "Accept-Encoding": "identity" },
+                    timeoutMs: 4e3
+                  });
+                  const cRange = String(probeRes.headers.get("content-range") || "");
+                  const totalFromRange = cRange.includes("/") ? Number(cRange.split("/")[1] || 0) : 0;
+                  const len = totalFromRange || Number(probeRes.headers.get("content-length") || 0);
+                  const ctype = String(probeRes.headers.get("content-type") || "").toLowerCase();
+                  if (probeRes.ok && (len > 2500 || len === 0 && ctype.includes("image")) && len !== 5687 && len !== 12177 && len !== 13498 && len !== 37458) {
+                    const probeBuf = Buffer.from(await probeRes.arrayBuffer());
+                    const dim = parseImageDimensionsFromBuffer(probeBuf);
+                    const isbnKey = String(entry.isbn).toUpperCase();
+                    if (!groupedByIsbn[isbnKey]) groupedByIsbn[isbnKey] = [];
+                    groupedByIsbn[isbnKey].push({
+                      resourceLink: link,
+                      hdCoverLink,
+                      width: dim?.width || 0,
+                      height: dim?.height || 0
+                    });
+                  }
+                } catch {
+                }
+              }
+            })
+          );
+          for (const [isbnKey, list] of Object.entries(groupedByIsbn)) {
+            const highQualityItem = list.find(
+              (x) => (x.resourceLink.includes("/cover/medium/") || x.resourceLink.includes("/cover/p/")) && (x.width === 0 || x.height >= x.width * 0.98)
+            );
+            const anyHighQualityItem = list.find(
+              (x) => x.resourceLink.includes("/cover/medium/") || x.resourceLink.includes("/cover/p/")
+            );
+            const externalHd = list.find((x) => Boolean(x.hdCoverLink))?.hdCoverLink || "";
+            const thumbItem = list[0];
+            if (highQualityItem) {
+              const ratio = highQualityItem.width > 0 ? highQualityItem.height / highQualityItem.width : 1.35;
+              isbnCoverMap[isbnKey] = {
+                url: highQualityItem.resourceLink,
+                qualityScore: ratio >= 1.12 ? 100 : 88
+              };
+            } else if (externalHd && /\.(?:360buyimg\.com|winxuancdn\.com|bookuu\.com)\//i.test(externalHd)) {
+              isbnCoverMap[isbnKey] = { url: externalHd, qualityScore: 76 };
+            } else if (anyHighQualityItem) {
+              isbnCoverMap[isbnKey] = {
+                url: anyHighQualityItem.resourceLink,
+                qualityScore: 30
+              };
+            } else if (thumbItem) {
+              isbnCoverMap[isbnKey] = { url: thumbItem.resourceLink, qualityScore: 60 };
             }
           }
         } catch {
@@ -49982,10 +51233,27 @@ function registerLibraryApiMiddlewares(server) {
       }
       const needInternetFallback = [];
       for (const u of unresolved) {
-        if (u.cleanIsbn && isbnCoverMap[u.cleanIsbn]) {
-          const url = isbnCoverMap[u.cleanIsbn];
+        let bestHit = null;
+        for (let idx = 0; idx < u.candidateIsbns.length; idx++) {
+          const candIsbn = u.candidateIsbns[idx];
+          const hit = isbnCoverMap[candIsbn];
+          if (!hit) continue;
+          const effectiveScore = hit.qualityScore - idx * 3;
+          if (!bestHit || effectiveScore > bestHit.qualityScore) {
+            bestHit = { url: hit.url, qualityScore: effectiveScore };
+          }
+        }
+        if (bestHit && bestHit.url) {
+          const url = bestHit.url;
           resolvedById[u.id] = url;
-          cache[u.cacheKey] = url;
+          setCoverCacheEntry(cache, u.cacheKey, url);
+          if (u.legacyIsbnKey) setCoverCacheEntry(cache, u.legacyIsbnKey, url);
+          if (!u.meta.partToken && !u.meta.volNumber) {
+            setCoverCacheEntry(cache, `title:${u.title}`, url);
+            if (u.candidateIsbns[0]) {
+              setCoverCacheEntry(cache, `isbn:${u.candidateIsbns[0]}`, url);
+            }
+          }
         } else {
           needInternetFallback.push(u);
         }
@@ -49996,10 +51264,21 @@ function registerLibraryApiMiddlewares(server) {
         await Promise.all(
           chunk.map(async (u) => {
             if (!u.title) return;
-            const imgUrl = await searchInternetBookCover(u.title, u.author);
-            if (imgUrl) {
+            const imgUrl = await searchInternetBookCover(
+              u.title,
+              u.author,
+              u.publisher,
+              u.cleanIsbn || u.candidateIsbns[0] || ""
+            );
+            if (imgUrl && isSafePublicHttpUrl(imgUrl)) {
               resolvedById[u.id] = imgUrl;
-              cache[u.cacheKey] = imgUrl;
+              setCoverCacheEntry(cache, u.cacheKey, imgUrl);
+              if (!u.meta.partToken && !u.meta.volNumber) {
+                setCoverCacheEntry(cache, `title:${u.title}`, imgUrl);
+                if (u.candidateIsbns[0]) {
+                  setCoverCacheEntry(cache, `isbn:${u.candidateIsbns[0]}`, imgUrl);
+                }
+              }
             }
           })
         );
@@ -50007,8 +51286,14 @@ function registerLibraryApiMiddlewares(server) {
       await saveCoverCache(cache);
       res.end(JSON.stringify({ ok: true, covers: resolvedById }));
     } catch (err) {
-      res.statusCode = 500;
-      res.end(JSON.stringify({ ok: false, message: err?.message || "\u83B7\u53D6\u5C01\u9762\u5931\u8D25" }));
+      res.statusCode = err?.statusCode || 500;
+      res.end(
+        JSON.stringify({
+          ok: false,
+          reqId: req.__reqId,
+          message: formatUpstreamError(err, "\u83B7\u53D6\u5C01\u9762\u5931\u8D25", req, "/api/covers/resolve")
+        })
+      );
     }
   });
   const sortHoldingsByPriority = (library, list) => {
@@ -50053,11 +51338,18 @@ function registerLibraryApiMiddlewares(server) {
       const keyword = String(body.keyword || "").trim();
       const branch = String(body.branch || body.scope || "all").trim();
       const onlyAvailable = body.onlyAvailable !== false;
+      const autoGroup = body.autoGroup === true;
       const rows = Math.min(Number(body.rows) || 15, 24);
       const page = Math.max(1, Number(body.page) || 1);
       const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
       if (!keyword) {
         res.end(JSON.stringify({ ok: true, items: [], zjTotal: 0, hzTotal: 0, hasMore: false }));
+        return;
+      }
+      const searchCacheKey = `search::${keyword.toLowerCase()}::${branch}::${onlyAvailable ? "1" : "0"}::${autoGroup ? "1" : "0"}::${rows}::${page}`;
+      const cachedSearchJson = getPublicQueryCache(searchCacheKey);
+      if (cachedSearchJson) {
+        res.end(cachedSearchJson);
         return;
       }
       const needZj = branch === "all" || branch === "zjlib" || branch.startsWith("zjlib:");
@@ -50219,7 +51511,7 @@ function registerLibraryApiMiddlewares(server) {
             "User-Agent": ua
           };
           const [zjTitleResp, zjFullResp] = await Promise.all([
-            fetch(`${ZJLIB_API_BASE}/search-admin-service/open-api/search/pageList`, {
+            fetch2(`${ZJLIB_API_BASE}/search-admin-service/open-api/search/pageList`, {
               method: "POST",
               headers: zjHeaders,
               body: JSON.stringify({
@@ -50238,7 +51530,7 @@ function registerLibraryApiMiddlewares(server) {
                 sortBy: []
               })
             }).then((r) => r.json()).catch(() => null),
-            fetch(`${ZJLIB_API_BASE}/search-admin-service/open-api/search/pageList`, {
+            fetch2(`${ZJLIB_API_BASE}/search-admin-service/open-api/search/pageList`, {
               method: "POST",
               headers: zjHeaders,
               body: JSON.stringify({
@@ -50274,7 +51566,7 @@ function registerLibraryApiMiddlewares(server) {
           const total = Number(
             zjTitleResp?.data?.total || zjFullResp?.data?.total || mergedRaw.length
           );
-          const rawCandidates = mergedRaw.map((r) => {
+          const rawCandidates = mergedRaw.map((r, idx) => {
             const bibId = String(
               Array.isArray(r.originalId) ? r.originalId[0] : r.originalId || r.id || ""
             ).trim();
@@ -50314,9 +51606,11 @@ function registerLibraryApiMiddlewares(server) {
               totalHoldings: 0,
               availableBranches: [],
               holdings: [],
-              _rel: calcRelevance(title, author, isbn)
+              _rel: calcRelevance(title, author, isbn),
+              _rawOrder: idx
             };
           }).filter((x) => Boolean(x.title && x.bibId)).sort((a, b) => {
+            if (!autoGroup) return a._rawOrder - b._rawOrder;
             if (a._rel !== b._rel) return a._rel - b._rel;
             return toNaturalTitleKey(a.title).localeCompare(
               toNaturalTitleKey(b.title),
@@ -50326,7 +51620,7 @@ function registerLibraryApiMiddlewares(server) {
           await Promise.all(
             rawCandidates.map(async (item) => {
               try {
-                const resListResp = await fetch(
+                const resListResp = await fetch2(
                   `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/resourceList`,
                   {
                     method: "POST",
@@ -50365,7 +51659,7 @@ function registerLibraryApiMiddlewares(server) {
                 const shelfDescMap = {};
                 if (shelfPrefixes.length > 0) {
                   try {
-                    const descResp = await fetch(
+                    const descResp = await fetch2(
                       `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/get/shelf/description/map`,
                       {
                         method: "POST",
@@ -50464,7 +51758,7 @@ function registerLibraryApiMiddlewares(server) {
           const cleanKw = searchKw.replace(/[．·：:，,（）()《》“”"']/g, " ").replace(/\s+/g, " ").trim();
           const curlibParam = hzTargetBranch && /^\d{4}$/.test(hzTargetBranch) && hzTargetBranch !== "1900" && hzTargetBranch !== "0900" && hzTargetBranch !== "1800" ? `&curlibcode=${encodeURIComponent(hzTargetBranch)}` : "";
           const hzSearchRows = Math.max(searchRows, 20);
-          const html3 = await fetch(
+          const html3 = await fetch2(
             `https://my1.zjhzlib.cn/opac/search?q=${encodeURIComponent(cleanKw || searchKw)}&searchWay=&scWay=dim&rows=${hzSearchRows}&page=${page}&sortWay=score&sortOrder=desc&hasholding=1${curlibParam}`,
             { headers: { "User-Agent": ua } }
           ).then((r) => r.text());
@@ -50511,7 +51805,7 @@ function registerLibraryApiMiddlewares(server) {
           if (rawItems.length > 0) {
             try {
               const recnos = rawItems.map((x) => x.bibId).join(",");
-              const prevRes = await fetch(
+              const prevRes = await fetch2(
                 `https://my1.zjhzlib.cn/opac/book/holdingPreviews?bookrecnos=${encodeURIComponent(recnos)}&curLibcodes=&return_fmt=json`,
                 { headers: { "User-Agent": ua } }
               ).then((r) => r.json());
@@ -50651,7 +51945,10 @@ function registerLibraryApiMiddlewares(server) {
         }
       })() : Promise.resolve({ total: 0, items: [], rawCount: 0, pageSize: 20 });
       const [zjRes, hzRes] = await Promise.all([zjPromise, hzPromise]);
-      let combined = [...zjRes.items, ...hzRes.items];
+      let combined = [...zjRes.items, ...hzRes.items].map((it, idx) => ({
+        ...it,
+        _rawOrder: idx
+      }));
       if (targetVolNum) {
         const volMatched = combined.filter(
           (item) => extractTitleVolumes(item.title).includes(targetVolNum)
@@ -50660,25 +51957,27 @@ function registerLibraryApiMiddlewares(server) {
           combined = volMatched;
         }
       }
-      combined.sort((a, b) => {
-        if (a._rel !== b._rel) return a._rel - b._rel;
-        const natCmp = toNaturalTitleKey(a.title).localeCompare(
-          toNaturalTitleKey(b.title),
-          "zh-CN"
-        );
-        if (natCmp !== 0) return natCmp;
-        if (b.availableCount > 0 !== a.availableCount > 0) {
-          return Number(b.availableCount > 0) - Number(a.availableCount > 0);
-        }
-        return 0;
-      });
+      if (autoGroup) {
+        combined.sort((a, b) => {
+          if (a._rel !== b._rel) return a._rel - b._rel;
+          const natCmp = toNaturalTitleKey(a.title).localeCompare(
+            toNaturalTitleKey(b.title),
+            "zh-CN"
+          );
+          if (natCmp !== 0) return natCmp;
+          if (b.availableCount > 0 !== a.availableCount > 0) {
+            return Number(b.availableCount > 0) - Number(a.availableCount > 0);
+          }
+          return 0;
+        });
+      }
       const zjPageLimit = targetVolNum ? 24 : 12;
       const zjHasMore = needZj && zjRes.rawCount >= zjPageLimit && page * zjPageLimit < zjRes.total;
       const hzPageSize = hzRes.pageSize || 20;
       const hzHasMore = needHz && hzRes.rawCount >= hzPageSize && page * hzPageSize < hzRes.total;
       const hasMore = (zjHasMore || hzHasMore) && combined.length > 0 && page < 15;
       res.end(
-        JSON.stringify({
+        setPublicQueryCache(searchCacheKey, {
           ok: true,
           page,
           hasMore,
@@ -50688,8 +51987,14 @@ function registerLibraryApiMiddlewares(server) {
         })
       );
     } catch (err) {
-      res.statusCode = 500;
-      res.end(JSON.stringify({ ok: false, message: err?.message || "\u5728\u7EBF\u68C0\u7D22\u9986\u85CF\u51FA\u9519" }));
+      res.statusCode = err?.statusCode || 500;
+      res.end(
+        JSON.stringify({
+          ok: false,
+          reqId: req.__reqId,
+          message: formatUpstreamError(err, "\u5728\u7EBF\u68C0\u7D22\u9986\u85CF\u51FA\u9519", req, "/api/catalog/search")
+        })
+      );
     }
   });
   server.middlewares.use("/api/holding/query", async (req, res) => {
@@ -50707,6 +52012,12 @@ function registerLibraryApiMiddlewares(server) {
       const title = String(body.title || "").trim();
       const callNo = String(body.callNo || "").trim();
       const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+      const holdingCacheKey = `holding::${library}::${bibId}::${isbn}::${callNo}::${title}`;
+      const cachedHoldingJson = getPublicQueryCache(holdingCacheKey);
+      if (cachedHoldingJson) {
+        res.end(cachedHoldingJson);
+        return;
+      }
       if (library === "hzlib") {
         if (!bibId && (isbn || callNo || title)) {
           const cleanTitle = title.replace(/[．·：:，,（）()《》“”"']/g, " ").replace(/\s+/g, " ").trim();
@@ -50717,7 +52028,7 @@ function registerLibraryApiMiddlewares(server) {
           if (title) candidates.push({ way: "title", q: title });
           for (const cand of candidates) {
             try {
-              const searchHtml = await fetch(
+              const searchHtml = await fetch2(
                 `https://my1.zjhzlib.cn/opac/search?q=${encodeURIComponent(cand.q)}&searchWay=${cand.way}&scWay=dim`,
                 { headers: { "User-Agent": ua } }
               ).then((r) => r.text());
@@ -50734,7 +52045,7 @@ function registerLibraryApiMiddlewares(server) {
           res.end(JSON.stringify({ ok: false, message: "\u672A\u627E\u5230\u8BE5\u4E66\u5728\u676D\u5DDE\u56FE\u4E66\u9986\u7684\u4E66\u76EE\u7F16\u53F7" }));
           return;
         }
-        const hRes = await fetch(
+        const hRes = await fetch2(
           `https://my1.zjhzlib.cn/opac/api/holding/${encodeURIComponent(bibId)}?limitLibcodes=&isCluster=false`,
           { headers: { "User-Agent": ua } }
         ).then((r) => r.json());
@@ -50771,7 +52082,7 @@ function registerLibraryApiMiddlewares(server) {
         const sortedHzHoldings = sortHoldingsByPriority("hzlib", holdings2);
         holdings2.splice(0, holdings2.length, ...sortedHzHoldings);
         res.end(
-          JSON.stringify({
+          setPublicQueryCache(holdingCacheKey, {
             ok: true,
             library: "hzlib",
             bibId,
@@ -50789,7 +52100,7 @@ function registerLibraryApiMiddlewares(server) {
         "Accept-Language": "zh-CN;q=0.9",
         "User-Agent": ua
       };
-      const workResp = await fetch(
+      const workResp = await fetch2(
         `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/getWorkById`,
         {
           method: "POST",
@@ -50800,7 +52111,7 @@ function registerLibraryApiMiddlewares(server) {
       const workRecord = workResp?.data?.record;
       const workId = Array.isArray(workRecord?.id) ? workRecord.id[0] : workRecord?.id || bibId;
       const sourceTypeArr = Array.isArray(workRecord?.sourceType) ? workRecord.sourceType : workRecord?.sourceType ? [workRecord.sourceType] : ["0"];
-      const resListResp = await fetch(
+      const resListResp = await fetch2(
         `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/resourceList`,
         {
           method: "POST",
@@ -50827,7 +52138,7 @@ function registerLibraryApiMiddlewares(server) {
       const shelfDescMap = {};
       if (shelfPrefixes.length > 0) {
         try {
-          const descResp = await fetch(
+          const descResp = await fetch2(
             `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/get/shelf/description/map`,
             {
               method: "POST",
@@ -50900,7 +52211,7 @@ function registerLibraryApiMiddlewares(server) {
       holdings.splice(0, holdings.length, ...sortedZjHoldings);
       const primaryNavHolding = holdings.find((h) => h.isAvailable && h.navUrl) || holdings.find((h) => h.navUrl);
       res.end(
-        JSON.stringify({
+        setPublicQueryCache(holdingCacheKey, {
           ok: true,
           library: "zjlib",
           bibId,
@@ -50913,8 +52224,14 @@ function registerLibraryApiMiddlewares(server) {
         })
       );
     } catch (err) {
-      res.statusCode = 500;
-      res.end(JSON.stringify({ ok: false, message: err?.message || "\u67E5\u8BE2\u9986\u85CF\u72B6\u6001\u5931\u8D25" }));
+      res.statusCode = err?.statusCode || 500;
+      res.end(
+        JSON.stringify({
+          ok: false,
+          reqId: req.__reqId,
+          message: formatUpstreamError(err, "\u67E5\u8BE2\u9986\u85CF\u72B6\u6001\u5931\u8D25", req, "/api/holding/query")
+        })
+      );
     }
   });
   server.middlewares.use("/api/loan/renew", async (req, res) => {
@@ -50937,9 +52254,10 @@ function registerLibraryApiMiddlewares(server) {
         let token = String(body.token || "").trim();
         const account2 = String(body.account || "").trim();
         const password2 = String(body.password || "");
-        if (!token && account2 && password2) {
-          const encryptedPassword = encryptZjlibPassword(password2);
-          const loginResp = await fetch(
+        const encryptedPasswordInput2 = String(body.encryptedPassword || "").trim();
+        if (!token && account2 && (encryptedPasswordInput2 || password2)) {
+          const encryptedPassword = encryptedPasswordInput2 || encryptZjlibPassword(password2);
+          const loginResp = await fetch2(
             `${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/login`,
             {
               method: "POST",
@@ -50983,7 +52301,7 @@ function registerLibraryApiMiddlewares(server) {
         };
         let readerCardNo = account2;
         try {
-          const uInfo = await fetch(
+          const uInfo = await fetch2(
             `${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/enc/user-info`,
             { headers: zjHeaders }
           ).then((r) => r.json());
@@ -50992,7 +52310,7 @@ function registerLibraryApiMiddlewares(server) {
           }
         } catch {
         }
-        const renewResp2 = await fetch(
+        const renewResp2 = await fetch2(
           `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/myOrder/batch/renew`,
           {
             method: "POST",
@@ -51004,9 +52322,9 @@ function registerLibraryApiMiddlewares(server) {
             })
           }
         ).then((r) => r.json());
-        if (renewResp2?.code === 401 && account2 && password2 && body.token) {
-          const encryptedPassword = encryptZjlibPassword(password2);
-          const loginResp = await fetch(
+        if (renewResp2?.code === 401 && account2 && (encryptedPasswordInput2 || password2) && body.token) {
+          const encryptedPassword = encryptedPasswordInput2 || encryptZjlibPassword(password2);
+          const loginResp = await fetch2(
             `${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/login`,
             {
               method: "POST",
@@ -51030,7 +52348,7 @@ function registerLibraryApiMiddlewares(server) {
         let newDueDate2 = "";
         let newRenewCount = 1;
         try {
-          const curResp2 = await fetch(
+          const curResp2 = await fetch2(
             `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/myLoans/current-loan`,
             {
               method: "POST",
@@ -51058,22 +52376,25 @@ function registerLibraryApiMiddlewares(server) {
       }
       const account = String(body.account || "").trim();
       const password = String(body.password || "");
+      const encryptedPasswordInput = String(body.encryptedPassword || "").trim();
+      const clientSessionCookie = String(body.sessionCookie || body.cookie || "").trim();
+      const loginSessionCookie = String(body.loginSessionCookie || "").trim();
       const captchaCode = String(body.captchaCode || "").trim();
       const captchaSessionCookie = String(body.captchaSessionCookie || "").trim();
       const captchaPemKey = String(body.captchaPemKey || "").trim();
-      if (!lastHzlibSessionCookie && (!account || !password)) {
+      if (!clientSessionCookie && (!account || !encryptedPasswordInput && !password)) {
         res.end(
           JSON.stringify({
             ok: false,
-            message: "\u672A\u68C0\u6D4B\u5230\u672C\u5730\u4FDD\u5B58\u7684\u676D\u5DDE\u56FE\u4E66\u9986\u8D26\u53F7\u5BC6\u7801\uFF0C\u8BF7\u5148\u5728\u300C\u5BFC\u5165/\u66F4\u65B0\u8BB0\u5F55\u300D\u4E2D\u767B\u5F55\u5E76\u52FE\u9009\u4FDD\u5B58"
+            message: "\u672A\u68C0\u6D4B\u5230\u5F53\u524D\u6D4F\u89C8\u5668\u7684\u676D\u5DDE\u56FE\u4E66\u9986\u8D26\u53F7\u51ED\u8BC1\uFF0C\u8BF7\u5148\u5728\u300C\u5BFC\u5165/\u66F4\u65B0\u8BB0\u5F55\u300D\u4E2D\u767B\u5F55\u5E76\u52FE\u9009\u4FDD\u5B58"
           })
         );
         return;
       }
-      let sessionCookie = lastHzlibSessionCookie;
+      let sessionCookie = clientSessionCookie;
       let renewListHtml = "";
       if (sessionCookie && !captchaCode) {
-        const testResp = await fetch(
+        const testResp = await fetch2(
           "https://my1.zjhzlib.cn/opac/loan/renewList?page=1&rows=100",
           { headers: { Cookie: sessionCookie, "User-Agent": ua }, redirect: "manual" }
         );
@@ -51090,11 +52411,23 @@ function registerLibraryApiMiddlewares(server) {
       }
       if (!sessionCookie) {
         let pemKey = "";
-        if (captchaCode && captchaSessionCookie && captchaPemKey) {
+        let encryptedPwd = encryptedPasswordInput;
+        if (captchaCode && captchaSessionCookie && (encryptedPwd || captchaPemKey)) {
           sessionCookie = captchaSessionCookie;
           pemKey = captchaPemKey;
+        } else if (encryptedPwd && (loginSessionCookie || captchaSessionCookie)) {
+          sessionCookie = loginSessionCookie || captchaSessionCookie;
         } else {
-          const loginPageResp = await fetch("https://my1.zjhzlib.cn/opac/reader/login", {
+          if (!password) {
+            res.end(
+              JSON.stringify({
+                ok: false,
+                message: "\u676D\u5DDE\u56FE\u4E66\u9986\u767B\u5F55\u4F1A\u8BDD\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u5728\u300C\u5BFC\u5165/\u66F4\u65B0\u8BB0\u5F55\u300D\u4E2D\u91CD\u65B0\u767B\u5F55\u540C\u6B65"
+              })
+            );
+            return;
+          }
+          const loginPageResp = await fetch2("https://my1.zjhzlib.cn/opac/reader/login", {
             headers: { "User-Agent": ua }
           });
           const setCookies = loginPageResp.headers.getSetCookie?.() || [
@@ -51102,13 +52435,15 @@ function registerLibraryApiMiddlewares(server) {
           ];
           const jsessionMatch = setCookies.join("; ").match(/JSESSIONID=[^;]+/);
           sessionCookie = jsessionMatch ? jsessionMatch[0] : "";
-          const pemResp = await fetch(
+          const pemResp = await fetch2(
             `https://my1.zjhzlib.cn/opac/certificate/pem?checkCode=${Date.now()}opac`,
             { headers: { "User-Agent": ua, Cookie: sessionCookie } }
           );
           pemKey = await pemResp.text();
         }
-        const encryptedPwd = encryptHzlibPassword(password, pemKey);
+        if (!encryptedPwd) {
+          encryptedPwd = encryptHzlibPassword(password, pemKey);
+        }
         const formData = new URLSearchParams();
         formData.set("vToken", "");
         formData.set("rdLoginId", account);
@@ -51121,7 +52456,7 @@ function registerLibraryApiMiddlewares(server) {
             formData.set(fieldName, captchaCode);
           }
         }
-        const loginResp = await fetch("https://my1.zjhzlib.cn/opac/reader/doLogin", {
+        const loginResp = await fetch2("https://my1.zjhzlib.cn/opac/reader/doLogin", {
           method: "POST",
           redirect: "manual",
           headers: {
@@ -51152,8 +52487,7 @@ function registerLibraryApiMiddlewares(server) {
             return;
           }
         }
-        lastHzlibSessionCookie = sessionCookie;
-        const curResp0 = await fetch(
+        const curResp0 = await fetch2(
           "https://my1.zjhzlib.cn/opac/loan/renewList?page=1&rows=100",
           { headers: { Cookie: sessionCookie, "User-Agent": ua } }
         );
@@ -51168,7 +52502,7 @@ function registerLibraryApiMiddlewares(server) {
       renewParams.set("barcodeList", barcode);
       renewParams.set("furl", "/opac/loan/renewList");
       renewParams.set("renewAll", "");
-      const renewResp = await fetch("https://my1.zjhzlib.cn/opac/loan/doRenew", {
+      const renewResp = await fetch2("https://my1.zjhzlib.cn/opac/loan/doRenew", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -51183,7 +52517,7 @@ function registerLibraryApiMiddlewares(server) {
       const promptBox = $renew("#page_content #content").length ? $renew("#page_content #content").clone() : $renew("#content").clone();
       promptBox.find("script, style, input, button").remove();
       const promptText = promptBox.text().replace(/\s+/g, " ").replace(/^操作提示\s*[:：]?\s*/, "").trim();
-      const curResp = await fetch(
+      const curResp = await fetch2(
         "https://my1.zjhzlib.cn/opac/loan/renewList?page=1&rows=100",
         { headers: { Cookie: sessionCookie, "User-Agent": ua } }
       );
@@ -51203,14 +52537,21 @@ function registerLibraryApiMiddlewares(server) {
       res.end(
         JSON.stringify({
           ok: isSuccess,
+          sessionCookie,
           dueDate: newDueDate,
           renewCount: updatedRenewCount,
           message: msg
         })
       );
     } catch (err) {
-      res.statusCode = 500;
-      res.end(JSON.stringify({ ok: false, message: err?.message || "\u5728\u7EBF\u7EED\u501F\u8BF7\u6C42\u5931\u8D25" }));
+      res.statusCode = err?.statusCode || 500;
+      res.end(
+        JSON.stringify({
+          ok: false,
+          reqId: req.__reqId,
+          message: formatUpstreamError(err, "\u5728\u7EBF\u7EED\u501F\u8BF7\u6C42\u5931\u8D25", req, "/api/loan/renew")
+        })
+      );
     }
   });
   server.middlewares.use("/api/zjlib/qr", async (req, res) => {
@@ -51226,7 +52567,7 @@ function registerLibraryApiMiddlewares(server) {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
       };
       if (action === "status" && uuid) {
-        const stResp = await fetch(
+        const stResp = await fetch2(
           `${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/qr/status?uuid=${encodeURIComponent(uuid)}`,
           { headers }
         );
@@ -51242,7 +52583,7 @@ function registerLibraryApiMiddlewares(server) {
         return;
       }
       const endpoint = type === "alipay" ? `${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/login/zfb-qr` : `${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/login/wechat-qr`;
-      const qrResp = await fetch(endpoint, { headers });
+      const qrResp = await fetch2(endpoint, { headers });
       const qrJson = await qrResp.json();
       if (qrJson.code !== 200 || !qrJson.data) {
         res.end(JSON.stringify({ ok: false, message: qrJson.desc || "\u83B7\u53D6\u4E8C\u7EF4\u7801\u5931\u8D25" }));
@@ -51258,8 +52599,14 @@ function registerLibraryApiMiddlewares(server) {
         })
       );
     } catch (err) {
-      res.statusCode = 500;
-      res.end(JSON.stringify({ ok: false, message: err?.message || "\u83B7\u53D6\u6D59\u56FE\u4E8C\u7EF4\u7801\u51FA\u9519" }));
+      res.statusCode = err?.statusCode || 500;
+      res.end(
+        JSON.stringify({
+          ok: false,
+          reqId: req.__reqId,
+          message: formatUpstreamError(err, "\u83B7\u53D6\u6D59\u56FE\u4E8C\u7EF4\u7801\u51FA\u9519", req, "/api/zjlib/qr")
+        })
+      );
     }
   });
   server.middlewares.use("/api/zjlib/sync", async (req, res) => {
@@ -51274,10 +52621,11 @@ function registerLibraryApiMiddlewares(server) {
       let token = (body.token || "").trim();
       const account = (body.account || "").trim();
       const password = body.password || "";
+      const encryptedPasswordInput = String(body.encryptedPassword || "").trim();
       const maxPages = Math.min(Number(body.maxPages) || 20, 50);
-      if (!token && account && password) {
-        const encryptedPassword = encryptZjlibPassword(password);
-        const loginResp = await fetch(`${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/login`, {
+      if (!token && account && (encryptedPasswordInput || password)) {
+        const encryptedPassword = encryptedPasswordInput || encryptZjlibPassword(password);
+        const loginResp = await fetch2(`${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/login`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -51315,7 +52663,7 @@ function registerLibraryApiMiddlewares(server) {
         Cookie: `userToken=${token}; bffUserToken=${token}`,
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
       };
-      const curResp = await fetch(
+      const curResp = await fetch2(
         `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/myLoans/current-loan`,
         {
           method: "POST",
@@ -51356,7 +52704,7 @@ function registerLibraryApiMiddlewares(server) {
       const size = 100;
       let total = 0;
       while (current <= maxPages) {
-        const hisResp = await fetch(
+        const hisResp = await fetch2(
           `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/myLoans/history-loan`,
           {
             method: "POST",
@@ -51413,8 +52761,14 @@ function registerLibraryApiMiddlewares(server) {
         })
       );
     } catch (err) {
-      res.statusCode = 500;
-      res.end(JSON.stringify({ ok: false, message: err?.message || "\u540C\u6B65\u6D59\u6C5F\u56FE\u4E66\u9986\u51FA\u9519" }));
+      res.statusCode = err?.statusCode || 500;
+      res.end(
+        JSON.stringify({
+          ok: false,
+          reqId: req.__reqId,
+          message: formatUpstreamError(err, "\u540C\u6B65\u6D59\u6C5F\u56FE\u4E66\u9986\u51FA\u9519", req, "/api/zjlib/sync")
+        })
+      );
     }
   });
   server.middlewares.use("/api/hzlib/sync", async (req, res) => {
@@ -51428,23 +52782,28 @@ function registerLibraryApiMiddlewares(server) {
       const body = await readJsonBody(req);
       const account = (body.account || "").trim();
       const password = body.password || "";
+      const encryptedPasswordInput = String(body.encryptedPassword || "").trim();
       let sessionCookie = (body.cookie || "").trim();
+      const loginSessionCookie = String(body.loginSessionCookie || "").trim();
       const captchaCode = (body.captchaCode || "").trim();
       const captchaSessionCookie = (body.captchaSessionCookie || "").trim();
       const captchaPemKey = (body.captchaPemKey || "").trim();
       const maxPages = Math.min(Number(body.maxPages) || 20, 50);
       const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
       if (!sessionCookie) {
-        if (!account || !password) {
+        if (!account || !encryptedPasswordInput && !password) {
           res.end(JSON.stringify({ ok: false, message: "\u8BF7\u8F93\u5165\u676D\u5DDE\u56FE\u4E66\u9986\u8BFB\u8005\u8BC1\u53F7/\u8EAB\u4EFD\u8BC1\u53F7\u4E0E\u5BC6\u7801" }));
           return;
         }
         let pemKey = "";
-        if (captchaCode && captchaSessionCookie && captchaPemKey) {
+        let encryptedPwd = encryptedPasswordInput;
+        if (captchaCode && captchaSessionCookie && (encryptedPwd || captchaPemKey)) {
           sessionCookie = captchaSessionCookie;
           pemKey = captchaPemKey;
+        } else if (encryptedPwd && (loginSessionCookie || captchaSessionCookie)) {
+          sessionCookie = loginSessionCookie || captchaSessionCookie;
         } else {
-          const loginPageResp = await fetch("https://my1.zjhzlib.cn/opac/reader/login", {
+          const loginPageResp = await fetch2("https://my1.zjhzlib.cn/opac/reader/login", {
             headers: { "User-Agent": ua }
           });
           const setCookies = loginPageResp.headers.getSetCookie?.() || [
@@ -51452,7 +52811,7 @@ function registerLibraryApiMiddlewares(server) {
           ];
           const jsessionMatch = setCookies.join("; ").match(/JSESSIONID=[^;]+/);
           sessionCookie = jsessionMatch ? jsessionMatch[0] : "";
-          const pemResp = await fetch(
+          const pemResp = await fetch2(
             `https://my1.zjhzlib.cn/opac/certificate/pem?checkCode=${Date.now()}opac`,
             {
               headers: { "User-Agent": ua, Cookie: sessionCookie }
@@ -51460,7 +52819,9 @@ function registerLibraryApiMiddlewares(server) {
           );
           pemKey = await pemResp.text();
         }
-        const encryptedPwd = encryptHzlibPassword(password, pemKey);
+        if (!encryptedPwd) {
+          encryptedPwd = encryptHzlibPassword(password, pemKey);
+        }
         const formData = new URLSearchParams();
         formData.set("vToken", "");
         formData.set("rdLoginId", account);
@@ -51473,7 +52834,7 @@ function registerLibraryApiMiddlewares(server) {
             formData.set(fieldName, captchaCode);
           }
         }
-        const loginResp = await fetch("https://my1.zjhzlib.cn/opac/reader/doLogin", {
+        const loginResp = await fetch2("https://my1.zjhzlib.cn/opac/reader/doLogin", {
           method: "POST",
           redirect: "manual",
           headers: {
@@ -51489,7 +52850,6 @@ function registerLibraryApiMiddlewares(server) {
         if (newSessionMatch) {
           sessionCookie = newSessionMatch[0];
         }
-        lastHzlibSessionCookie = sessionCookie;
         if (loginResp.status === 200) {
           const loginHtml = await loginResp.text();
           if (loginHtml.includes('id="loginForm"')) {
@@ -51511,7 +52871,7 @@ function registerLibraryApiMiddlewares(server) {
       const rawCurrentRows = [];
       let curPage = 1;
       while (curPage <= 10) {
-        const curResp = await fetch(
+        const curResp = await fetch2(
           `https://my1.zjhzlib.cn/opac/loan/currentLoanList?page=${curPage}&rows=100`,
           {
             headers: {
@@ -51534,7 +52894,7 @@ function registerLibraryApiMiddlewares(server) {
       }
       let renewByBarcode = /* @__PURE__ */ new Map();
       try {
-        const renewResp = await fetch(
+        const renewResp = await fetch2(
           "https://my1.zjhzlib.cn/opac/loan/renewList?page=1&rows=100",
           {
             headers: {
@@ -51550,7 +52910,7 @@ function registerLibraryApiMiddlewares(server) {
       const rawHistoryRows = [];
       let hisPage = 1;
       while (hisPage <= maxPages) {
-        const hisResp = await fetch(
+        const hisResp = await fetch2(
           `https://my1.zjhzlib.cn/opac/loan/historyLoanList?page=${hisPage}&rows=100`,
           {
             headers: {
@@ -51571,13 +52931,10 @@ function registerLibraryApiMiddlewares(server) {
         renewByBarcode
       );
       const allRecords = [...currentRecords, ...historyRecords];
-      latestHzlibSyncCache = {
-        records: allRecords,
-        syncedAt: (/* @__PURE__ */ new Date()).toLocaleString("zh-CN", { hour12: false })
-      };
       res.end(
         JSON.stringify({
           ok: true,
+          sessionCookie,
           records: allRecords,
           summary: {
             currentCount: currentRecords.length,
@@ -51586,8 +52943,14 @@ function registerLibraryApiMiddlewares(server) {
         })
       );
     } catch (err) {
-      res.statusCode = 500;
-      res.end(JSON.stringify({ ok: false, message: err?.message || "\u540C\u6B65\u676D\u5DDE\u56FE\u4E66\u9986\u51FA\u9519" }));
+      res.statusCode = err?.statusCode || 500;
+      res.end(
+        JSON.stringify({
+          ok: false,
+          reqId: req.__reqId,
+          message: formatUpstreamError(err, "\u540C\u6B65\u676D\u5DDE\u56FE\u4E66\u9986\u51FA\u9519", req, "/api/hzlib/sync")
+        })
+      );
     }
   });
 }

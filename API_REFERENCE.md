@@ -10,7 +10,24 @@
 
 ## 一、本项目内部代理服务接口（`/api/*`）
 
-实现文件：[src/server/libraryProxy.ts](D:/dev/LibraryHelper/src/server/libraryProxy.ts) 与 [api/[...path].ts](D:/dev/LibraryHelper/api/[...path].ts)
+实现文件：[src/server/libraryProxy.ts](D:/dev/LibraryHelper/src/server/libraryProxy.ts)、[src/server/vercelEntry.ts](D:/dev/LibraryHelper/src/server/vercelEntry.ts) 与 [api/index.js](D:/dev/LibraryHelper/api/index.js)
+
+### 1.0 版本号与部署环境检测接口
+- **路径**：`GET /api/version`（以及 `GET /api/health`）
+- **数据来源**：项目根目录 [version.json](D:/dev/LibraryHelper/version.json)
+- **功能**：返回当前部署的服务端版本号、更新日期、运行环境（`vercel` / `local`）及 Vercel 机房区域代码（`region`，如 `hkg1`），用于验证线上是否已成功更新到最新版本。
+- **返回示例**：
+  ```json
+  {
+    "ok": true,
+    "version": "1.0.1",
+    "updatedAt": "2026-11-26",
+    "description": "升级 upstreamFetch 高可用请求引擎、双域名故障切换与版本检测接口",
+    "env": "vercel",
+    "region": "hkg1",
+    "serverTime": "2026-11-26T01:30:00.000Z"
+  }
+  ```
 
 ### 1.1 杭州图书馆验证码会话初始化
 - **路径**：`GET /api/hzlib/captcha`

@@ -14,5 +14,5 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "api/**/*.ts", "addr/**/*.json"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "api/**/*.ts", "addr/**/*.json", "version.json"]
 }

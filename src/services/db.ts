@@ -38,6 +38,28 @@ function saveLocalAnnotationBackup(title: string, data: UserAnnotationSnapshot):
   }
 }
 
+function sanitizeCoverUrl(rawUrl: string): string {
+  const trimmed = String(rawUrl || '')
+    .trim()
+    .replace(/^http:\/\//i, 'https://')
+    .replace(/(&f=(?:JPEG|PNG|GIF|WEBP))=240=320(?:\?fmt=auto)?/gi, '$1?w=600&h=820')
+  if (!trimmed) return ''
+  const lower = trimmed.toLowerCase()
+  if (
+    lower.includes('openbookscan.com.cn:1235') ||
+    lower.includes('d9fa61ec5b294296a2a53bfe5a167c91') ||
+    lower.includes('fb87c5fae030416d8f9629c56451e355') ||
+    lower.includes('bigbg.png') ||
+    lower.includes('default_book') ||
+    lower.includes('no_pic') ||
+    lower.includes('nopic') ||
+    lower.includes('zanwu')
+  ) {
+    return ''
+  }
+  return /^https?:\/\//i.test(trimmed) ? trimmed : ''
+}
+
 /**
  * 剥离 Vue 3 响应式 Proxy，确保传入 IndexedDB store.put() 的对象 100% 是纯 JS 对象与纯数组，防止 DataCloneError
  */
@@ -46,6 +68,7 @@ export function toPlainRecord(rec: BorrowRecord): BorrowRecord {
     id: String(rec.id || ''),
     library: rec.library === 'hzlib' ? 'hzlib' : 'zjlib',
     subLibrary: String(rec.subLibrary || ''),
+    account: String(rec.account || ''),
     status: rec.status === 'borrowed' ? 'borrowed' : 'returned',
     title: String(rec.title || ''),
     author: String(rec.author || ''),
@@ -57,7 +80,7 @@ export function toPlainRecord(rec: BorrowRecord): BorrowRecord {
     dueDate: String(rec.dueDate || ''),
     returnDate: String(rec.returnDate || ''),
     renewCount: Number(rec.renewCount || 0),
-    coverUrl: String(rec.coverUrl || ''),
+    coverUrl: sanitizeCoverUrl(rec.coverUrl || ''),
     rating: Number(rec.rating || 0),
     verdict: rec.verdict || '',
     tags: Array.isArray(rec.tags) ? [...rec.tags].map(String) : [],
@@ -165,8 +188,13 @@ export async function purgeDemoAndBrokenRecords(): Promise<number> {
 
 export async function upsertRecords(
   incomingList: Array<Partial<BorrowRecord>>,
-  options: { keepDemo?: boolean } = {}
-): Promise<{ added: number; updated: number; total: number }> {
+  options: {
+    keepDemo?: boolean
+    source?: 'zjlib' | 'hzlib' | 'mixed'
+    account?: string
+    isFullOnlineSync?: boolean
+  } = {}
+): Promise<{ added: number; updated: number; retainedExpired: number; total: number }> {
   // If incoming records are real user records, remove demo & broken records first
   const isIncomingDemo = incomingList.some((r) => /^(ZJ0|HZ0)\d{7}$/.test((r.barcode || '').trim()))
   if (!isIncomingDemo && !options.keepDemo) {
@@ -177,6 +205,7 @@ export async function upsertRecords(
   const existingMap = new Map<string, BorrowRecord>()
   const activeBorrowByBarcode = new Map<string, BorrowRecord>()
   const annotationBackup = getLocalAnnotationsBackup()
+  const cleanOptionAccount = (options.account || '').trim()
 
   for (const rec of existing) {
     existingMap.set(rec.id, rec)
@@ -197,21 +226,31 @@ export async function upsertRecords(
   let added = 0
   let updated = 0
   const toSave: BorrowRecord[] = []
+  const touchedIds = new Set<string>()
+  const incomingBorrowedBarcodes = new Set<string>()
 
   for (const item of incomingList) {
     if (!item.title) continue
     const id = item.id || buildRecordId(item)
+    const lib = item.library || 'zjlib'
+    const bc = (item.barcode || '').trim()
+    if (item.status === 'borrowed' && bc) {
+      incomingBorrowedBarcodes.add(`${lib}:${bc}`)
+    }
     const prev =
       existingMap.get(id) ||
-      (item.barcode ? activeBorrowByBarcode.get(`${item.library || 'zjlib'}:${item.barcode}`) : undefined)
+      (bc ? activeBorrowByBarcode.get(`${lib}:${bc}`) : undefined)
 
     if (prev) {
       updated++
+      const targetId = prev.id || id
+      touchedIds.add(targetId)
       const merged: BorrowRecord = {
         ...prev,
-        id,
+        id: targetId,
         library: item.library || prev.library,
         subLibrary: item.subLibrary || prev.subLibrary,
+        account: (item.account || cleanOptionAccount || prev.account || '').trim(),
         status: item.status || prev.status,
         title: item.title.trim(),
         author: (item.author ?? prev.author ?? '').trim(),
@@ -237,16 +276,18 @@ export async function upsertRecords(
               : prev.progress,
         updatedAt: Date.now(),
       }
-      existingMap.set(id, merged)
+      existingMap.set(targetId, merged)
       toSave.push(merged)
     } else {
       added++
+      touchedIds.add(id)
       const normTitleKey = item.title.replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, '').toLowerCase()
       const savedAnnot = annotationBackup[normTitleKey]
       const created: BorrowRecord = {
         id,
         library: item.library || 'zjlib',
         subLibrary: item.subLibrary || (item.library === 'hzlib' ? '杭州图书馆' : '浙江图书馆'),
+        account: (item.account || cleanOptionAccount || '').trim(),
         status: item.status || 'returned',
         title: item.title.trim(),
         author: (item.author || '').trim(),
@@ -274,6 +315,44 @@ export async function upsertRecords(
     }
   }
 
+  // 处理同账号下因图书馆服务器年限过期而未再返回的历史记录：
+  // 1. 永久保留在本地 IndexedDB 中，绝不删除
+  // 2. 若旧记录尚未标记 account，自动补齐为当前同馆同步账号
+  // 3. 若本次为在线全量同步，且本地某条旧记录仍为 borrowed 但已不在服务器当前在借列表中，自动闭合为 returned
+  let retainedExpired = 0
+  const targetSource = options.source
+  if (targetSource === 'zjlib' || targetSource === 'hzlib') {
+    for (const rec of existing) {
+      if (rec.library !== targetSource) continue
+      if (touchedIds.has(rec.id)) continue
+      const isSameOrUnboundAccount =
+        !rec.account || !cleanOptionAccount || rec.account === cleanOptionAccount
+      if (!isSameOrUnboundAccount) continue
+
+      retainedExpired++
+      let needUpdate = false
+      const patched: BorrowRecord = { ...rec }
+      if (!patched.account && cleanOptionAccount) {
+        patched.account = cleanOptionAccount
+        needUpdate = true
+      }
+      if (
+        options.isFullOnlineSync &&
+        patched.status === 'borrowed' &&
+        (!patched.barcode || !incomingBorrowedBarcodes.has(`${targetSource}:${patched.barcode}`))
+      ) {
+        patched.status = 'returned'
+        if (patched.progress < 100) patched.progress = 100
+        needUpdate = true
+      }
+      if (needUpdate) {
+        patched.updatedAt = Date.now()
+        existingMap.set(patched.id, patched)
+        toSave.push(patched)
+      }
+    }
+  }
+
   const db = await openDB()
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_RECORDS, 'readwrite')
@@ -285,7 +364,7 @@ export async function upsertRecords(
     tx.onerror = () => reject(tx.error)
   })
 
-  return { added, updated, total: existingMap.size }
+  return { added, updated, retainedExpired, total: existingMap.size }
 }
 
 export async function updateRecordUserMeta(
@@ -416,4 +495,29 @@ export async function batchUpdateCoverUrls(coverMap: Record<string, string>): Pr
     tx.onerror = () => reject(tx.error)
   })
   return updatedCount
+}
+
+export async function clearCoverUrlsByIds(ids: string[]): Promise<number> {
+  const validIds = ids.filter(Boolean)
+  if (validIds.length === 0) return 0
+  const db = await openDB()
+  let clearedCount = 0
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_RECORDS, 'readwrite')
+    const store = tx.objectStore(STORE_RECORDS)
+    for (const id of validIds) {
+      const getReq = store.get(id)
+      getReq.onsuccess = () => {
+        const rec = getReq.result as BorrowRecord | undefined
+        if (rec && rec.coverUrl) {
+          rec.coverUrl = ''
+          store.put(rec)
+          clearedCount++
+        }
+      }
+    }
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+  return clearedCount
 }

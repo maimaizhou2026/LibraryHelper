@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import {
   X,
   RefreshCw,
@@ -7,8 +7,19 @@ import {
   AlertCircle,
   QrCode,
   ExternalLink,
+  Download,
+  Upload,
+  FileJson,
+  FileSpreadsheet,
+  UserCheck,
 } from 'lucide-vue-next'
 import type { BorrowRecord, SyncMeta } from '../types/library'
+import {
+  encryptHzlibPasswordClient,
+  encryptZjlibPasswordClient,
+  loadSavedCredential,
+  saveCredentialToStorage,
+} from '../utils/cryptoAuth'
 
 async function parseJsonSafe(resp: Response): Promise<any> {
   const text = await resp.text()
@@ -29,14 +40,23 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'imported', payload: { records: Array<Partial<BorrowRecord>>; source: 'zjlib' | 'hzlib' | 'mixed' }): void
+  (
+    e: 'imported',
+    payload: {
+      records: Array<Partial<BorrowRecord>>
+      source: 'zjlib' | 'hzlib' | 'mixed'
+      account?: string
+      isFullOnlineSync?: boolean
+      syncMetaPatch?: Partial<SyncMeta>
+    }
+  ): void
   (e: 'load-demo'): void
   (e: 'export-json'): void
   (e: 'export-csv'): void
   (e: 'clear-all'): void
 }>()
 
-const activeTab = ref<'hzlib' | 'zjlib'>('hzlib')
+const activeTab = ref<'hzlib' | 'zjlib' | 'backup'>('hzlib')
 
 // 杭州图书馆同步表单
 const hzlibAccount = ref('')
@@ -70,6 +90,15 @@ let zjlibQrTimer: number | null = null
 type StatusMsgType = { type: 'success' | 'error' | 'info'; text: string } | null
 const hzStatusMsg = ref<StatusMsgType>(null)
 const zjStatusMsg = ref<StatusMsgType>(null)
+const backupStatusMsg = ref<StatusMsgType>(null)
+const backupFileInput = ref<HTMLInputElement | null>(null)
+
+const effectiveHzAccount = computed(() =>
+  (props.syncMeta.hzlibAccount || hzlibAccount.value || '').trim()
+)
+const effectiveZjAccount = computed(() =>
+  (props.syncMeta.zjlibAccount || zjlibAccount.value || '').trim()
+)
 
 function switchToZjlibTab() {
   activeTab.value = 'zjlib'
@@ -85,6 +114,7 @@ watch(
       stopZjlibQrPoll()
       hzStatusMsg.value = null
       zjStatusMsg.value = null
+      backupStatusMsg.value = null
       oneClickDoneDialog.value = null
     } else {
       // 每次打开弹窗时若本地凭据已被退出登录清除，则重置表单输入框
@@ -167,10 +197,15 @@ async function syncZjlibWithToken(tokenValue: string) {
       zjStatusMsg.value = { type: 'error', text: data.message || '浙江图书馆同步失败' }
       return
     }
-    emit('imported', { records: data.records || [], source: 'zjlib' })
+    emit('imported', {
+      records: data.records || [],
+      source: 'zjlib',
+      account: zjlibAccount.value.trim() || props.syncMeta.zjlibAccount || '',
+      isFullOnlineSync: true,
+    })
     zjStatusMsg.value = {
       type: 'success',
-      text: `浙江图书馆同步成功！共获取 ${data.records?.length || 0} 条记录（在借 ${data.summary?.currentCount || 0} 本，历史 ${data.summary?.historyCount || 0} 本）`,
+      text: `浙江图书馆同步成功！本次拉取 ${data.records?.length || 0} 条（在借 ${data.summary?.currentCount || 0} 本，历史 ${data.summary?.historyCount || 0} 本），本地超期历史已自动保留`,
     }
   } finally {
     zjlibLoading.value = false
@@ -184,22 +219,16 @@ onBeforeUnmount(() => {
 // 粘贴/文件导入
 onMounted(() => {
   try {
-    const savedHz = localStorage.getItem('lh_hzlib_cred')
-    if (savedHz) {
-      const parsed = JSON.parse(savedHz)
-      hzlibAccount.value = parsed.account || ''
-      hzlibPassword.value = parsed.password || ''
-      hzlibRemember.value =
-        parsed.remember !== undefined ? Boolean(parsed.remember) : Boolean(parsed.password)
-    }
-    const savedZj = localStorage.getItem('lh_zjlib_cred')
-    if (savedZj) {
-      const parsed = JSON.parse(savedZj)
-      zjlibAccount.value = parsed.account || ''
-      zjlibPassword.value = parsed.password || ''
-      zjlibRemember.value =
-        parsed.remember !== undefined ? Boolean(parsed.remember) : Boolean(parsed.password)
-    }
+    const hzCred = loadSavedCredential('lh_hzlib_cred')
+    hzlibAccount.value = hzCred.account
+    hzlibPassword.value = hzCred.password
+    hzlibRemember.value = hzCred.remember
+
+    const zjCred = loadSavedCredential('lh_zjlib_cred')
+    zjlibAccount.value = zjCred.account
+    zjlibPassword.value = zjCred.password
+    zjlibRemember.value = zjCred.remember
+
     const savedZjToken = localStorage.getItem('lh_zjlib_token')
     if (savedZjToken) {
       zjlibToken.value = savedZjToken
@@ -208,6 +237,24 @@ onMounted(() => {
     // ignore
   }
 })
+
+async function prepareHzlibClientEncryptedPayload(plainPassword: string) {
+  if (hzlibNeedCaptcha.value && hzlibCaptchaCookie.value && hzlibCaptchaPemKey.value) {
+    return {
+      encryptedPassword: encryptHzlibPasswordClient(plainPassword, hzlibCaptchaPemKey.value),
+      loginSessionCookie: hzlibCaptchaCookie.value,
+    }
+  }
+  const initResp = await fetch('/api/hzlib/captcha?mode=init')
+  const initData = await parseJsonSafe(initResp)
+  if (!initData.ok || !initData.pemKey || !initData.sessionCookie) {
+    throw new Error(initData.message || '初始化杭州图书馆安全加密会话失败')
+  }
+  return {
+    encryptedPassword: encryptHzlibPasswordClient(plainPassword, initData.pemKey),
+    loginSessionCookie: initData.sessionCookie,
+  }
+}
 
 async function refreshHzlibCaptcha() {
   try {
@@ -237,28 +284,24 @@ async function handleHzlibOnlineSync() {
   hzlibLoading.value = true
   hzStatusMsg.value = { type: 'info', text: '正在连接杭州图书馆并拉取全量借阅记录...' }
   try {
-    if (hzlibRemember.value) {
-      localStorage.setItem(
-        'lh_hzlib_cred',
-        JSON.stringify({
-          account: hzlibAccount.value.trim(),
-          password: hzlibPassword.value,
-          remember: true,
-        })
-      )
-    } else {
-      localStorage.setItem(
-        'lh_hzlib_cred',
-        JSON.stringify({ account: hzlibAccount.value.trim(), password: '', remember: false })
-      )
-    }
+    saveCredentialToStorage(
+      'lh_hzlib_cred',
+      hzlibAccount.value,
+      hzlibPassword.value,
+      hzlibRemember.value
+    )
+
+    const { encryptedPassword, loginSessionCookie } = await prepareHzlibClientEncryptedPayload(
+      hzlibPassword.value
+    )
 
     const resp = await fetch('/api/hzlib/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         account: hzlibAccount.value.trim(),
-        password: hzlibPassword.value,
+        encryptedPassword,
+        loginSessionCookie,
         captchaCode: hzlibNeedCaptcha.value ? hzlibCaptchaCode.value.trim() : '',
         captchaSessionCookie: hzlibNeedCaptcha.value ? hzlibCaptchaCookie.value : '',
         captchaPemKey: hzlibNeedCaptcha.value ? hzlibCaptchaPemKey.value : '',
@@ -279,10 +322,18 @@ async function handleHzlibOnlineSync() {
     }
     hzlibNeedCaptcha.value = false
     hzlibCaptchaCode.value = ''
-    emit('imported', { records: data.records || [], source: 'hzlib' })
+    if (data.sessionCookie) {
+      localStorage.setItem('lh_hzlib_cookie', data.sessionCookie)
+    }
+    emit('imported', {
+      records: data.records || [],
+      source: 'hzlib',
+      account: hzlibAccount.value.trim(),
+      isFullOnlineSync: true,
+    })
     hzStatusMsg.value = {
       type: 'success',
-      text: `杭州图书馆同步成功！共获取 ${data.records?.length || 0} 条记录（在借 ${data.summary?.currentCount || 0} 本，历史 ${data.summary?.historyCount || 0} 本）`,
+      text: `杭州图书馆同步成功！本次拉取 ${data.records?.length || 0} 条（在借 ${data.summary?.currentCount || 0} 本，历史 ${data.summary?.historyCount || 0} 本），本地超期历史已自动保留`,
     }
   } catch (e: any) {
     hzStatusMsg.value = {
@@ -302,28 +353,20 @@ async function handleZjlibOnlineSync() {
   zjlibLoading.value = true
   zjStatusMsg.value = { type: 'info', text: '正在连接浙江图书馆并拉取当前在借与历史借阅数据...' }
   try {
-    if (zjlibRemember.value) {
-      localStorage.setItem(
-        'lh_zjlib_cred',
-        JSON.stringify({
-          account: zjlibAccount.value.trim(),
-          password: zjlibPassword.value,
-          remember: true,
-        })
-      )
-    } else {
-      localStorage.setItem(
-        'lh_zjlib_cred',
-        JSON.stringify({ account: zjlibAccount.value.trim(), password: '', remember: false })
-      )
-    }
+    saveCredentialToStorage(
+      'lh_zjlib_cred',
+      zjlibAccount.value,
+      zjlibPassword.value,
+      zjlibRemember.value
+    )
+    const encryptedPassword = encryptZjlibPasswordClient(zjlibPassword.value)
     const resp = await fetch('/api/zjlib/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         token: '',
         account: zjlibAccount.value.trim(),
-        password: zjlibPassword.value,
+        encryptedPassword,
         maxPages: 30,
       }),
     })
@@ -336,10 +379,15 @@ async function handleZjlibOnlineSync() {
       zjlibToken.value = data.token
       localStorage.setItem('lh_zjlib_token', data.token)
     }
-    emit('imported', { records: data.records || [], source: 'zjlib' })
+    emit('imported', {
+      records: data.records || [],
+      source: 'zjlib',
+      account: zjlibAccount.value.trim(),
+      isFullOnlineSync: true,
+    })
     zjStatusMsg.value = {
       type: 'success',
-      text: `浙江图书馆同步成功！共获取 ${data.records?.length || 0} 条记录（在借 ${data.summary?.currentCount || 0} 本，历史 ${data.summary?.historyCount || 0} 本）`,
+      text: `浙江图书馆同步成功！本次拉取 ${data.records?.length || 0} 条（在借 ${data.summary?.currentCount || 0} 本，历史 ${data.summary?.historyCount || 0} 本），本地超期历史已自动保留`,
     }
   } catch (e: any) {
     zjStatusMsg.value = {
@@ -376,27 +424,21 @@ async function handleOneClickSyncAll() {
         (async () => {
           hzlibLoading.value = true
           try {
-            if (hzlibRemember.value) {
-              localStorage.setItem(
-                'lh_hzlib_cred',
-                JSON.stringify({
-                  account: hzlibAccount.value.trim(),
-                  password: hzlibPassword.value,
-                  remember: true,
-                })
-              )
-            } else {
-              localStorage.setItem(
-                'lh_hzlib_cred',
-                JSON.stringify({ account: hzlibAccount.value.trim(), password: '', remember: false })
-              )
-            }
+            saveCredentialToStorage(
+              'lh_hzlib_cred',
+              hzlibAccount.value,
+              hzlibPassword.value,
+              hzlibRemember.value
+            )
+            const { encryptedPassword, loginSessionCookie } =
+              await prepareHzlibClientEncryptedPayload(hzlibPassword.value)
             const resp = await fetch('/api/hzlib/sync', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 account: hzlibAccount.value.trim(),
-                password: hzlibPassword.value,
+                encryptedPassword,
+                loginSessionCookie,
                 captchaCode: hzlibNeedCaptcha.value ? hzlibCaptchaCode.value.trim() : '',
                 captchaSessionCookie: hzlibNeedCaptcha.value ? hzlibCaptchaCookie.value : '',
                 captchaPemKey: hzlibNeedCaptcha.value ? hzlibCaptchaPemKey.value : '',
@@ -420,7 +462,15 @@ async function handleOneClickSyncAll() {
             }
             hzlibNeedCaptcha.value = false
             hzlibCaptchaCode.value = ''
-            emit('imported', { records: data.records || [], source: 'hzlib' })
+            if (data.sessionCookie) {
+              localStorage.setItem('lh_hzlib_cookie', data.sessionCookie)
+            }
+            emit('imported', {
+              records: data.records || [],
+              source: 'hzlib',
+              account: hzlibAccount.value.trim(),
+              isFullOnlineSync: true,
+            })
             const okText = `杭州图书馆同步成功！共获取 ${data.records?.length || 0} 条记录（在借 ${data.summary?.currentCount || 0} 本，历史 ${data.summary?.historyCount || 0} 本）`
             hzStatusMsg.value = { type: 'success', text: okText }
             successLines.push(
@@ -442,28 +492,20 @@ async function handleOneClickSyncAll() {
         (async () => {
           zjlibLoading.value = true
           try {
-            if (zjlibRemember.value) {
-              localStorage.setItem(
-                'lh_zjlib_cred',
-                JSON.stringify({
-                  account: zjlibAccount.value.trim(),
-                  password: zjlibPassword.value,
-                  remember: true,
-                })
-              )
-            } else {
-              localStorage.setItem(
-                'lh_zjlib_cred',
-                JSON.stringify({ account: zjlibAccount.value.trim(), password: '', remember: false })
-              )
-            }
+            saveCredentialToStorage(
+              'lh_zjlib_cred',
+              zjlibAccount.value,
+              zjlibPassword.value,
+              zjlibRemember.value
+            )
+            const encryptedPassword = encryptZjlibPasswordClient(zjlibPassword.value)
             const resp = await fetch('/api/zjlib/sync', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 token: '',
                 account: zjlibAccount.value.trim(),
-                password: zjlibPassword.value,
+                encryptedPassword,
                 maxPages: 30,
               }),
             })
@@ -478,7 +520,12 @@ async function handleOneClickSyncAll() {
               zjlibToken.value = data.token
               localStorage.setItem('lh_zjlib_token', data.token)
             }
-            emit('imported', { records: data.records || [], source: 'zjlib' })
+            emit('imported', {
+              records: data.records || [],
+              source: 'zjlib',
+              account: zjlibAccount.value.trim(),
+              isFullOnlineSync: true,
+            })
             const okText = `浙江图书馆同步成功！共获取 ${data.records?.length || 0} 条记录（在借 ${data.summary?.currentCount || 0} 本，历史 ${data.summary?.historyCount || 0} 本）`
             zjStatusMsg.value = { type: 'success', text: okText }
             successLines.push(
@@ -510,6 +557,137 @@ async function handleOneClickSyncAll() {
     }
   } finally {
     oneClickSyncLoading.value = false
+  }
+}
+
+function triggerBackupFileSelect() {
+  backupStatusMsg.value = null
+  backupFileInput.value?.click()
+}
+
+async function handleBackupFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+
+  backupStatusMsg.value = { type: 'info', text: `正在读取并核对备份文件「${file.name}」的账号信息...` }
+  try {
+    const rawText = await file.text()
+    const parsed = JSON.parse(rawText)
+    const list: Array<Partial<BorrowRecord>> = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.records)
+        ? parsed.records
+        : []
+
+    if (list.length === 0) {
+      backupStatusMsg.value = {
+        type: 'error',
+        text: '导入失败：备份文件中未找到有效的借阅记录数据',
+      }
+      return
+    }
+
+    // 提取备份文件中的账号签名信息
+    let fileHzAccount = String(
+      parsed?.accounts?.hzlibAccount || parsed?.syncMeta?.hzlibAccount || ''
+    ).trim()
+    let fileZjAccount = String(
+      parsed?.accounts?.zjlibAccount || parsed?.syncMeta?.zjlibAccount || ''
+    ).trim()
+    for (const r of list) {
+      const acc = String(r.account || '').trim()
+      if (!acc) continue
+      if (!fileHzAccount && r.library === 'hzlib') fileHzAccount = acc
+      if (!fileZjAccount && r.library === 'zjlib') fileZjAccount = acc
+    }
+
+    const localHz = effectiveHzAccount.value
+    const localZj = effectiveZjAccount.value
+    const hasLocalData = props.totalCount > 0 && Boolean(localHz || localZj)
+
+    // 1. 若备份文件既无账号签名，本地也未填写任何账号，要求先填写或登录账号再导入
+    if (!fileHzAccount && !fileZjAccount && !localHz && !localZj) {
+      backupStatusMsg.value = {
+        type: 'error',
+        text: '账号核对未通过：该备份文件未包含账号标识，且当前本地未填写任何读者账号。请先在「杭州图书馆同步」或「浙江图书馆同步」中填写您的账号后再导入。',
+      }
+      return
+    }
+
+    // 2. 若本地已有数据或已填写账号，严格校验备份文件中的账号与当前账号是否一致
+    const conflicts: string[] = []
+    if (fileHzAccount && localHz && fileHzAccount !== localHz) {
+      conflicts.push(`杭州图书馆备份账号（${fileHzAccount}）与当前账号（${localHz}）不一致`)
+    }
+    if (fileZjAccount && localZj && fileZjAccount !== localZj) {
+      conflicts.push(`浙江图书馆备份账号（${fileZjAccount}）与当前账号（${localZj}）不一致`)
+    }
+    // 若备份文件只含某一个馆的账号，而本地只绑定了另一个馆的不同账号，也核对是否存在跨人混入
+    if (
+      hasLocalData &&
+      conflicts.length === 0 &&
+      ((fileHzAccount && !localHz && localZj && fileHzAccount !== localZj) ||
+        (fileZjAccount && !localZj && localHz && fileZjAccount !== localHz))
+    ) {
+      const fileAcc = fileHzAccount || fileZjAccount
+      const curAcc = localHz || localZj
+      conflicts.push(`备份文件所属账号（${fileAcc}）与当前本地已登录账号（${curAcc}）不一致`)
+    }
+
+    if (conflicts.length > 0) {
+      backupStatusMsg.value = {
+        type: 'error',
+        text: `账号核对失败：${conflicts.join('；')}！为防止不同读者的借阅记录混淆，已拒绝导入。若需切换账号，请先点击主页右上角「退出登录」后再导入。`,
+      }
+      return
+    }
+
+    // 账号核对通过：为导入记录补齐账号标识并增量合并入库
+    const finalHzAcc = fileHzAccount || localHz
+    const finalZjAcc = fileZjAccount || localZj
+    const stampedRecords = list.map((r) => ({
+      ...r,
+      account:
+        r.account ||
+        (r.library === 'hzlib' ? finalHzAcc : r.library === 'zjlib' ? finalZjAcc : ''),
+    }))
+
+    const syncMetaPatch: Partial<SyncMeta> = {}
+    if (finalHzAcc) syncMetaPatch.hzlibAccount = finalHzAcc
+    if (finalZjAcc) syncMetaPatch.zjlibAccount = finalZjAcc
+    if (parsed?.syncMeta?.hzlibLastSync && !props.syncMeta.hzlibLastSync) {
+      syncMetaPatch.hzlibLastSync = parsed.syncMeta.hzlibLastSync
+    }
+    if (parsed?.syncMeta?.zjlibLastSync && !props.syncMeta.zjlibLastSync) {
+      syncMetaPatch.zjlibLastSync = parsed.syncMeta.zjlibLastSync
+    }
+
+    if (finalHzAcc && !hzlibAccount.value) hzlibAccount.value = finalHzAcc
+    if (finalZjAcc && !zjlibAccount.value) zjlibAccount.value = finalZjAcc
+
+    emit('imported', {
+      records: stampedRecords,
+      source: 'mixed',
+      syncMetaPatch,
+    })
+
+    const verifiedAccText = [
+      finalHzAcc ? `杭图 ${finalHzAcc}` : '',
+      finalZjAcc ? `浙图 ${finalZjAcc}` : '',
+    ]
+      .filter(Boolean)
+      .join(' / ')
+    backupStatusMsg.value = {
+      type: 'success',
+      text: `账号核对通过（${verifiedAccText || '已绑定当前账号'}）！成功导入合并 ${stampedRecords.length} 条记录，本地历史记录与读书笔记均已完整保留。`,
+    }
+  } catch (err: any) {
+    backupStatusMsg.value = {
+      type: 'error',
+      text: `解析备份文件失败：请确认上传的是有效的 JSON 备份文件（${err?.message || '格式错误'}）`,
+    }
   }
 }
 
@@ -557,10 +735,10 @@ async function handleOneClickSyncAll() {
         </div>
       </div>
 
-      <!-- Tabs (只保留杭州图书馆同步与浙江图书馆同步) -->
-      <div class="grid grid-cols-2 border-b border-slate-200 bg-slate-50 text-xs sm:text-sm font-medium">
+      <!-- Tabs (杭州图书馆同步 / 浙江图书馆同步 / 本地导入导出) -->
+      <div class="grid grid-cols-3 border-b border-slate-200 bg-slate-50 text-xs sm:text-sm font-medium">
         <button
-          class="py-3 px-2 border-b-2 transition cursor-pointer text-center"
+          class="py-3 px-1.5 border-b-2 transition cursor-pointer text-center whitespace-nowrap truncate"
           :class="
             activeTab === 'hzlib'
               ? 'border-teal-600 text-teal-700 bg-white font-semibold'
@@ -571,7 +749,7 @@ async function handleOneClickSyncAll() {
           📚 杭州图书馆同步
         </button>
         <button
-          class="py-3 px-2 border-b-2 transition cursor-pointer text-center"
+          class="py-3 px-1.5 border-b-2 transition cursor-pointer text-center whitespace-nowrap truncate"
           :class="
             activeTab === 'zjlib'
               ? 'border-teal-600 text-teal-700 bg-white font-semibold'
@@ -580,6 +758,17 @@ async function handleOneClickSyncAll() {
           @click="switchToZjlibTab"
         >
           🏛️ 浙江图书馆同步
+        </button>
+        <button
+          class="py-3 px-1.5 border-b-2 transition cursor-pointer text-center whitespace-nowrap truncate"
+          :class="
+            activeTab === 'backup'
+              ? 'border-teal-600 text-teal-700 bg-white font-semibold'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          "
+          @click="stopZjlibQrPoll(); activeTab = 'backup'"
+        >
+          💾 本地导入/导出
         </button>
       </div>
 
@@ -835,6 +1024,107 @@ async function handleOneClickSyncAll() {
             <p v-else class="text-[11px] text-slate-600 pt-0.5 leading-relaxed">
               💡 <strong>密码小提示</strong>：若未单独修改过浙图密码，初始密码通常是<strong>身份证号后 6 位</strong>或<strong>出生年月日（如 19900101）</strong>。若忘记密码可在浙江图书馆官网登录页点击「忘记密码」通过绑定手机号重置。
             </p>
+          </div>
+        </div>
+
+        <!-- TAB 3: 本地导入/导出（含账号一致性核对与永久历史备份） -->
+        <div v-if="activeTab === 'backup'" class="space-y-4">
+          <!-- 当前本地绑定账号核对卡片 -->
+          <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+            <div class="font-semibold text-slate-800 flex items-center justify-between gap-2">
+              <span class="flex items-center gap-1.5">
+                <UserCheck class="w-4 h-4 text-teal-600 shrink-0" />
+                本地绑定账号
+              </span>
+              <span class="px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200 font-semibold">
+                本地共 {{ totalCount }} 册
+              </span>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5 text-[11px] text-slate-600">
+              <div class="px-2.5 py-1.5 rounded-lg bg-white border border-slate-200/80 flex items-center justify-between">
+                <span>📚 杭图账号：</span>
+                <span class="font-mono font-semibold text-slate-800">
+                  {{ effectiveHzAccount || '未绑定' }}
+                </span>
+              </div>
+              <div class="px-2.5 py-1.5 rounded-lg bg-white border border-slate-200/80 flex items-center justify-between">
+                <span>🏛️ 浙图账号：</span>
+                <span class="font-mono font-semibold text-slate-800">
+                  {{ effectiveZjAccount || '未绑定' }}
+                </span>
+              </div>
+            </div>
+            <p class="text-[11px] text-slate-500 leading-relaxed">
+              💡 图书馆服务器通常仅保留近期借阅记录。建议定期导出 JSON 备份文件
+            </p>
+          </div>
+
+          <!-- 1. 导出记录到本地 -->
+          <div class="p-4 rounded-xl bg-white border border-slate-200 space-y-3">
+            <div class="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
+              <Download class="w-4 h-4 text-teal-600 shrink-0" />
+              导出本地记录备份（含账号信息、评价标签与读书笔记）
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                :disabled="totalCount === 0"
+                class="px-3.5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-50 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                @click="emit('export-json')"
+              >
+                <FileJson class="w-4 h-4 shrink-0" />
+                导出 JSON 完整备份 ({{ totalCount }}册)
+              </button>
+              <button
+                type="button"
+                :disabled="totalCount === 0"
+                class="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 border border-slate-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                @click="emit('export-csv')"
+              >
+                <FileSpreadsheet class="w-4 h-4 shrink-0 text-emerald-600" />
+                导出 CSV 表格 (Excel可开)
+              </button>
+            </div>
+          </div>
+
+          <!-- 2. 从本地备份文件导入（强制核对账号信息） -->
+          <div class="p-4 rounded-xl bg-white border border-slate-200 space-y-3">
+            <div class="text-xs font-semibold text-slate-800 flex items-center gap-1.5">
+              <Upload class="w-4 h-4 text-indigo-600 shrink-0" />
+              导入本地 JSON 备份记录
+            </div>
+            <input
+              ref="backupFileInput"
+              type="file"
+              accept=".json,application/json"
+              class="hidden"
+              @change="handleBackupFileChange"
+            />
+            <button
+              type="button"
+              class="w-full py-3 px-4 rounded-xl border-2 border-dashed border-indigo-200 hover:border-indigo-400 bg-indigo-50/40 hover:bg-indigo-50/80 text-indigo-700 text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
+              @click="triggerBackupFileSelect"
+            >
+              <Upload class="w-4 h-4 shrink-0" />
+              选择本地 JSON 备份文件并核对账号导入
+            </button>
+            <p class="text-[11px] text-slate-500 leading-relaxed">
+              🔒 导入时将自动核对备份文件中的读者账号与当前本地绑定账号是否一致；核对通过后将与本地现有记录增量去重合并，不会覆盖或丢失任何已有历史记录与笔记。
+            </p>
+          </div>
+
+          <!-- 状态提示 -->
+          <div
+            v-if="backupStatusMsg"
+            class="p-3 rounded-xl text-xs sm:text-sm flex items-start gap-2 border"
+            :class="{
+              'bg-emerald-50 border-emerald-200 text-emerald-800': backupStatusMsg.type === 'success',
+              'bg-rose-50 border-rose-200 text-rose-800': backupStatusMsg.type === 'error',
+              'bg-sky-50 border-sky-200 text-sky-800': backupStatusMsg.type === 'info',
+            }"
+          >
+            <AlertCircle class="w-4 h-4 shrink-0 mt-0.5" />
+            <span class="leading-relaxed">{{ backupStatusMsg.text }}</span>
           </div>
         </div>
       </div>

@@ -13,7 +13,12 @@ import {
   X,
 } from 'lucide-vue-next'
 import type { BorrowRecord, CatalogHoldingItem } from '../types/library'
-import { normalizeBookTitle } from '../utils/search'
+import {
+  normalizeBookTitle,
+  parseJsonSafe,
+  prefetchHighResCover,
+  toThumbnailCoverUrl,
+} from '../utils/search'
 import {
   getLibraryAddressInfo,
   getLibraryBranchPriority,
@@ -50,7 +55,17 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'search'): void
   (e: 'load-more'): void
-  (e: 'zoom-cover', payload: { title: string; coverUrl: string }): void
+  (
+    e: 'zoom-cover',
+    payload: {
+      id?: string
+      title: string
+      coverUrl: string
+      author?: string
+      publisher?: string
+      isbn?: string
+    }
+  ): void
   (e: 'cover-error', id: string): void
 }>()
 
@@ -208,7 +223,7 @@ async function fetchDetailHoldings(book: BorrowRecord, panel: HoldingPanelState)
         title: book.title,
         callNo: book.callNo,
       }),
-    }).then((r) => r.json())
+    }).then((r) => parseJsonSafe(r))
 
     if (!resp.ok) {
       panel.error = resp.message || '未能获取到该书实时馆藏信息'
@@ -355,17 +370,27 @@ function getBorrowStatusBadge(book: BorrowRecord) {
               book.coverUrl && !brokenCovers[book.id] ? 'cursor-zoom-in' : '',
             ]"
             :title="book.coverUrl && !brokenCovers[book.id] ? '点击全屏查看封面' : undefined"
+            @mouseenter="book.coverUrl && !brokenCovers[book.id] && prefetchHighResCover(book.coverUrl)"
+            @touchstart.passive="book.coverUrl && !brokenCovers[book.id] && prefetchHighResCover(book.coverUrl)"
             @click="
               book.coverUrl &&
               !brokenCovers[book.id] &&
-              emit('zoom-cover', { title: book.title, coverUrl: book.coverUrl })
+              emit('zoom-cover', {
+                id: book.id,
+                title: book.title,
+                coverUrl: book.coverUrl,
+                author: book.author,
+                publisher: book.publisher,
+                isbn: book.isbn,
+              })
             "
           >
             <img
               v-if="book.coverUrl && !brokenCovers[book.id]"
-              :src="book.coverUrl"
+              :src="toThumbnailCoverUrl(book.coverUrl)"
               :alt="book.title"
               loading="lazy"
+              decoding="async"
               referrerpolicy="no-referrer"
               class="w-full h-full object-cover"
               @error="emit('cover-error', book.id)"

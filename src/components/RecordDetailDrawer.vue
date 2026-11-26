@@ -23,8 +23,19 @@ import {
   getDaysRemaining,
   getEffectiveRenewCount,
   getMaxRenewLimit,
+  parseJsonSafe,
+  prefetchHighResCover,
+  isHighResCoverDecoded,
+  preloadAndDecodeHighResCover,
+  toHighResCoverUrl,
+  toThumbnailCoverUrl,
 } from '../utils/search'
 import { getLibraryAddressInfo, openLibraryLocationInMap } from '../utils/mapLink'
+import {
+  encryptHzlibPasswordClient,
+  encryptZjlibPasswordClient,
+  loadSavedCredential,
+} from '../utils/cryptoAuth'
 
 const props = defineProps<{
   record: BorrowRecord | null
@@ -65,6 +76,8 @@ const verdictOptions: Array<{ value: VerdictType; label: string; activeCls: stri
 
 const imgLoadFailed = ref(false)
 const showFullCover = ref(false)
+const drawerFullActiveSrc = ref('')
+const drawerHdCoverUrl = ref('')
 
 interface HoldingItem {
   isAvailable: boolean
@@ -123,6 +136,8 @@ watch(
     if (isNewBook) {
       imgLoadFailed.value = false
       showFullCover.value = false
+      drawerFullActiveSrc.value = ''
+      drawerHdCoverUrl.value = ''
       holdingLoading.value = false
       holdingLoaded.value = false
       holdingError.value = ''
@@ -159,6 +174,23 @@ const daysLeft = computed(() =>
   props.record?.status === 'borrowed' && props.record.dueDate ? getDaysRemaining(props.record.dueDate) : null
 )
 
+function openDrawerFullCover() {
+  const rec = props.record
+  if (!rec || !rec.coverUrl || imgLoadFailed.value) return
+  const rawCover = drawerHdCoverUrl.value || rec.coverUrl
+  const thumbUrl = toThumbnailCoverUrl(rawCover)
+  const hdUrl = toHighResCoverUrl(rawCover)
+  drawerFullActiveSrc.value = isHighResCoverDecoded(rawCover) ? hdUrl : thumbUrl
+  showFullCover.value = true
+  if (drawerFullActiveSrc.value !== hdUrl && hdUrl && hdUrl !== thumbUrl) {
+    void preloadAndDecodeHighResCover(rawCover).then((ok) => {
+      if (ok && showFullCover.value && props.record?.id === rec.id) {
+        drawerFullActiveSrc.value = hdUrl
+      }
+    })
+  }
+}
+
 async function fetchLiveHoldingStatus() {
   const rec = props.record
   if (!rec) return
@@ -179,7 +211,7 @@ async function fetchLiveHoldingStatus() {
         title: rec.title,
         callNo: rec.callNo,
       }),
-    }).then((r) => r.json())
+    }).then((r) => parseJsonSafe(r))
 
     if (!resp.ok) {
       holdingError.value = resp.message || '未能获取到该书实时馆藏信息'
@@ -207,22 +239,32 @@ async function handleOnlineRenew() {
   renewFeedback.value = null
   try {
     let account = ''
-    let password = ''
+    let encryptedPassword = ''
     let token = ''
+    let sessionCookie = ''
+    let loginSessionCookie = ''
     if (rec.library === 'zjlib') {
       token = localStorage.getItem('lh_zjlib_token') || ''
-      const rawZj = localStorage.getItem('lh_zjlib_cred')
-      if (rawZj) {
-        const parsed = JSON.parse(rawZj)
-        account = parsed.account || ''
-        password = parsed.password || ''
-      }
+      const zjCred = loadSavedCredential('lh_zjlib_cred')
+      account = zjCred.account
+      encryptedPassword = zjCred.password ? encryptZjlibPasswordClient(zjCred.password) : ''
     } else {
-      const rawHz = localStorage.getItem('lh_hzlib_cred')
-      if (rawHz) {
-        const parsed = JSON.parse(rawHz)
-        account = parsed.account || ''
-        password = parsed.password || ''
+      sessionCookie = localStorage.getItem('lh_hzlib_cookie') || ''
+      const hzCred = loadSavedCredential('lh_hzlib_cred')
+      account = hzCred.account
+      if (hzCred.password) {
+        if (renewNeedCaptcha.value && renewCaptchaCookie.value && renewCaptchaPem.value) {
+          encryptedPassword = encryptHzlibPasswordClient(hzCred.password, renewCaptchaPem.value)
+          loginSessionCookie = renewCaptchaCookie.value
+        } else {
+          const initResp: any = await fetch('/api/hzlib/captcha?mode=init').then((r) =>
+            parseJsonSafe(r)
+          )
+          if (initResp?.ok && initResp.pemKey && initResp.sessionCookie) {
+            encryptedPassword = encryptHzlibPasswordClient(hzCred.password, initResp.pemKey)
+            loginSessionCookie = initResp.sessionCookie
+          }
+        }
       }
     }
 
@@ -234,15 +276,20 @@ async function handleOnlineRenew() {
         barcode: rec.barcode,
         token,
         account,
-        password,
+        encryptedPassword,
+        sessionCookie,
+        loginSessionCookie,
         captchaCode: renewNeedCaptcha.value ? renewCaptchaCode.value.trim() : '',
         captchaSessionCookie: renewNeedCaptcha.value ? renewCaptchaCookie.value : '',
         captchaPemKey: renewNeedCaptcha.value ? renewCaptchaPem.value : '',
       }),
-    }).then((r) => r.json())
+    }).then((r) => parseJsonSafe(r))
 
     if (resp.token) {
       localStorage.setItem('lh_zjlib_token', resp.token)
+    }
+    if (resp.sessionCookie) {
+      localStorage.setItem('lh_hzlib_cookie', resp.sessionCookie)
     }
 
     if (resp.needCaptcha && resp.captchaImage) {
@@ -348,12 +395,16 @@ function handleClose() {
             <div
               class="w-[104px] h-[142px] rounded-xl overflow-hidden shrink-0 border border-slate-200 shadow-md bg-gradient-to-br from-teal-700 to-slate-800 flex items-center justify-center text-white relative group cursor-zoom-in"
               title="点击查看全屏大图"
-              @click="record.coverUrl && !imgLoadFailed ? (showFullCover = true) : null"
+              @mouseenter="record.coverUrl && !imgLoadFailed && prefetchHighResCover(record.coverUrl)"
+              @touchstart.passive="record.coverUrl && !imgLoadFailed && prefetchHighResCover(record.coverUrl)"
+              @click="openDrawerFullCover"
             >
               <img
                 v-if="record.coverUrl && !imgLoadFailed"
-                :src="record.coverUrl"
+                :src="toThumbnailCoverUrl(record.coverUrl)"
                 :alt="record.title"
+                loading="lazy"
+                decoding="async"
                 referrerpolicy="no-referrer"
                 class="w-full h-full object-cover"
                 @error="imgLoadFailed = true"
@@ -484,12 +535,16 @@ function handleClose() {
           <div
             class="w-24 h-34 sm:w-28 sm:h-40 rounded-xl overflow-hidden shrink-0 border border-slate-200 shadow-sm bg-gradient-to-br from-teal-700 to-slate-800 flex items-center justify-center text-white relative group cursor-zoom-in"
             title="点击查看全屏大图"
-            @click="record.coverUrl && !imgLoadFailed ? (showFullCover = true) : null"
+            @mouseenter="record.coverUrl && !imgLoadFailed && prefetchHighResCover(record.coverUrl)"
+            @touchstart.passive="record.coverUrl && !imgLoadFailed && prefetchHighResCover(record.coverUrl)"
+            @click="openDrawerFullCover"
           >
             <img
               v-if="record.coverUrl && !imgLoadFailed"
-              :src="record.coverUrl"
+              :src="toThumbnailCoverUrl(record.coverUrl)"
               :alt="record.title"
+              loading="lazy"
+              decoding="async"
               referrerpolicy="no-referrer"
               class="w-full h-full object-cover transition group-hover:scale-105"
               @error="imgLoadFailed = true"
@@ -960,12 +1015,15 @@ function handleClose() {
       class="fixed inset-0 z-[80] bg-slate-950/88 backdrop-blur-xs flex flex-col items-center justify-center p-6 cursor-zoom-out"
       @click="showFullCover = false"
     >
-      <img
-        :src="record.coverUrl"
-        :alt="record.title"
-        referrerpolicy="no-referrer"
-        class="max-w-full max-h-[80vh] rounded-2xl shadow-2xl object-contain border border-white/15"
-      />
+      <div class="relative flex items-center justify-center max-w-full max-h-[80vh]">
+        <img
+          :src="drawerFullActiveSrc || toThumbnailCoverUrl(drawerHdCoverUrl || record.coverUrl)"
+          :alt="record.title"
+          decoding="sync"
+          referrerpolicy="no-referrer"
+          class="w-auto h-[72vh] max-w-[88vw] max-h-[80vh] rounded-2xl shadow-2xl object-contain border border-white/15 bg-slate-900 select-none"
+        />
+      </div>
       <div class="mt-4 text-center space-y-1">
         <div class="text-white font-bold text-sm sm:text-base">《{{ record.title }}》</div>
         <div class="text-slate-400 text-xs">点击任意空白位置返回详情页</div>

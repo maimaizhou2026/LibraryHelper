@@ -16,6 +16,8 @@ import {
   getDaysRemaining,
   getEffectiveRenewCount,
   getMaxRenewLimit,
+  prefetchHighResCover,
+  toThumbnailCoverUrl,
 } from '../utils/search'
 
 const props = defineProps<{
@@ -29,7 +31,17 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'select', record: BorrowRecord): void
-  (e: 'zoom-cover', payload: { title: string; coverUrl: string }): void
+  (
+    e: 'zoom-cover',
+    payload: {
+      id?: string
+      title: string
+      coverUrl: string
+      author?: string
+      publisher?: string
+      isbn?: string
+    }
+  ): void
   (e: 'cover-error', id: string): void
 }>()
 
@@ -72,7 +84,14 @@ const hasUserAnnotations = computed(
 
 function handleCoverClick() {
   if (props.record.coverUrl && !props.coverBroken) {
-    emit('zoom-cover', { title: props.record.title, coverUrl: props.record.coverUrl })
+    emit('zoom-cover', {
+      id: props.record.id,
+      title: props.record.title,
+      coverUrl: props.record.coverUrl,
+      author: props.record.author,
+      publisher: props.record.publisher,
+      isbn: props.record.isbn,
+    })
   } else {
     emit('select', props.record)
   }
@@ -93,13 +112,16 @@ function handleCoverClick() {
         <div
           class="w-[106px] h-[146px] rounded-xl overflow-hidden shrink-0 border border-slate-200/90 bg-gradient-to-br from-teal-700 via-teal-800 to-slate-900 flex flex-col items-center justify-center text-white text-center shadow-md relative cursor-zoom-in"
           title="点击全屏查看封面"
+          @mouseenter="record.coverUrl && !coverBroken && prefetchHighResCover(record.coverUrl)"
+          @touchstart.passive="record.coverUrl && !coverBroken && prefetchHighResCover(record.coverUrl)"
           @click.stop="handleCoverClick"
         >
           <img
             v-if="record.coverUrl && !coverBroken"
-            :src="record.coverUrl"
+            :src="toThumbnailCoverUrl(record.coverUrl)"
             :alt="record.title"
             loading="lazy"
+            decoding="async"
             referrerpolicy="no-referrer"
             class="w-full h-full object-cover"
             @error="emit('cover-error', record.id)"
@@ -266,13 +288,16 @@ function handleCoverClick() {
       <div
         class="w-22 h-30 rounded-xl overflow-hidden shrink-0 border border-slate-200/90 bg-gradient-to-br from-teal-700 via-teal-800 to-slate-900 flex flex-col items-center justify-center text-white text-center shadow-xs relative cursor-zoom-in"
         title="点击放大查看封面"
+        @mouseenter="record.coverUrl && !coverBroken && prefetchHighResCover(record.coverUrl)"
+        @touchstart.passive="record.coverUrl && !coverBroken && prefetchHighResCover(record.coverUrl)"
         @click.stop="handleCoverClick"
       >
         <img
           v-if="record.coverUrl && !coverBroken"
-          :src="record.coverUrl"
+          :src="toThumbnailCoverUrl(record.coverUrl)"
           :alt="record.title"
           loading="lazy"
+          decoding="async"
           referrerpolicy="no-referrer"
           class="w-full h-full object-cover transition group-hover:scale-103"
           @error="emit('cover-error', record.id)"

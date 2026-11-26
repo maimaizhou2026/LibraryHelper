@@ -1,18 +1,394 @@
 import type { Plugin } from 'vite'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
+import http from 'node:http'
+import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
+import zlib from 'node:zlib'
 import * as cheerio from 'cheerio'
 import smCrypto from 'sm-crypto'
+import versionInfo from '../../version.json'
 import {
   getLibraryAddressInfo,
   getLibraryBranchPriority,
   ZJLIB_BRANCH_CONFIG,
 } from '../utils/mapLink'
 
-let latestHzlibSyncCache: { records: any[]; syncedAt: string } | null = null
-let lastHzlibSessionCookie = ''
+const DEFAULT_BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+
+export interface UpstreamResponse {
+  ok: boolean
+  status: number
+  headers: {
+    get: (name: string) => string | null
+    getSetCookie: () => string[]
+  }
+  text: () => Promise<string>
+  json: () => Promise<any>
+  arrayBuffer: () => Promise<ArrayBuffer>
+}
+
+function buildBrowserHeaders(targetUrl: URL, rawHeaders?: Record<string, any>): Record<string, string> {
+  const headers: Record<string, string> = {
+    'User-Agent': DEFAULT_BROWSER_UA,
+    Accept: 'application/json, text/plain, text/html, */*',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    Connection: 'keep-alive',
+  }
+  const host = targetUrl.hostname.toLowerCase()
+  if (host.includes('zjlib.cn')) {
+    headers.Origin = 'https://www.zjlib.cn'
+    headers.Referer = 'https://www.zjlib.cn/'
+  } else if (host.includes('zjhzlib.cn')) {
+    headers.Origin = `${targetUrl.protocol}//${targetUrl.host}`
+    headers.Referer = `${targetUrl.protocol}//${targetUrl.host}/opac/reader/login`
+  }
+  if (rawHeaders) {
+    for (const [k, v] of Object.entries(rawHeaders)) {
+      if (v !== undefined && v !== null) {
+        headers[k] = String(v)
+      }
+    }
+  }
+  return headers
+}
+
+function decompressBody(buf: Buffer, encoding: string): Buffer {
+  const enc = (encoding || '').toLowerCase().trim()
+  try {
+    if (enc === 'gzip' || enc === 'x-gzip') return zlib.gunzipSync(buf)
+    if (enc === 'deflate') return zlib.inflateSync(buf)
+    if (enc === 'br') return zlib.brotliDecompressSync(buf)
+  } catch {
+    // return original buffer if decompression fails
+  }
+  return buf
+}
+
+function shouldAllowRelaxedTls(hostname: string): boolean {
+  const h = (hostname || '').toLowerCase()
+  return h.endsWith('zjhzlib.cn') || h.endsWith('dataesb.com')
+}
+
+function isSafePublicHttpUrl(rawUrl: string): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return false
+  if (rawUrl.startsWith('/api/covers/zjlib-image?')) return true
+  try {
+    const u = new URL(rawUrl)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+    if (u.hash.startsWith('#hd=')) {
+      try {
+        const hdDecoded = decodeURIComponent(u.hash.slice(4))
+        if (hdDecoded && !isSafePublicHttpUrl(hdDecoded)) return false
+      } catch {
+        return false
+      }
+    }
+    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+    if (
+      !host ||
+      host === 'localhost' ||
+      host === '0.0.0.0' ||
+      host === '::1' ||
+      host.endsWith('.local') ||
+      host.endsWith('.internal')
+    ) {
+      return false
+    }
+    if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host)) {
+      return false
+    }
+    const m172 = host.match(/^172\.(\d+)\./)
+    if (m172) {
+      const second = Number(m172[1])
+      if (second >= 16 && second <= 31) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+function singleNodeHttpRequest(
+  urlStr: string,
+  init?: {
+    method?: string
+    headers?: Record<string, any>
+    body?: string | Buffer
+    redirect?: 'follow' | 'manual'
+    timeoutMs?: number
+    relaxTls?: boolean
+  },
+  redirectCount = 0
+): Promise<UpstreamResponse> {
+  return new Promise((resolve, reject) => {
+    const targetUrl = new URL(urlStr)
+    const reqStartAt = Date.now()
+    const wrapUpstreamErr = (rawErr: any) => {
+      const errObj = rawErr instanceof Error ? rawErr : new Error(String(rawErr || 'Upstream Error'))
+      return Object.assign(errObj, {
+        upstreamHost: targetUrl.hostname,
+        upstreamElapsedMs: Date.now() - reqStartAt,
+      })
+    }
+    const isHttps = targetUrl.protocol === 'https:'
+    const method = (init?.method || 'GET').toUpperCase()
+    const headers = buildBrowserHeaders(targetUrl, init?.headers)
+    const bodyBuf =
+      init?.body !== undefined
+        ? Buffer.isBuffer(init.body)
+          ? init.body
+          : Buffer.from(String(init.body), 'utf8')
+        : undefined
+    if (bodyBuf && !headers['Content-Length'] && !headers['content-length']) {
+      headers['Content-Length'] = String(bodyBuf.byteLength)
+    }
+
+    const reqFn = isHttps ? https.request : http.request
+    const allowRelaxedTls = Boolean(init?.relaxTls) || shouldAllowRelaxedTls(targetUrl.hostname)
+    const req = reqFn(
+      targetUrl,
+      {
+        method,
+        headers,
+        family: 4,
+        rejectUnauthorized: !allowRelaxedTls,
+        timeout: init?.timeoutMs || 15000,
+      },
+      (res) => {
+        const status = res.statusCode || 200
+        const rawSetCookie = res.headers['set-cookie']
+        const setCookieList = Array.isArray(rawSetCookie)
+          ? rawSetCookie
+          : rawSetCookie
+            ? [String(rawSetCookie)]
+            : []
+
+        // 处理自动重定向（当未指定 redirect: 'manual' 时）
+        if (
+          init?.redirect !== 'manual' &&
+          [301, 302, 303, 307, 308].includes(status) &&
+          res.headers.location &&
+          redirectCount < 5
+        ) {
+          res.resume()
+          const nextUrl = new URL(res.headers.location, targetUrl).toString()
+          const nextMethod = status === 303 ? 'GET' : method
+          singleNodeHttpRequest(
+            nextUrl,
+            {
+              ...init,
+              method: nextMethod,
+              body: nextMethod === 'GET' ? undefined : init?.body,
+            },
+            redirectCount + 1
+          )
+            .then(resolve)
+            .catch(reject)
+          return
+        }
+
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
+        res.on('end', () => {
+          const rawBuf = Buffer.concat(chunks)
+          const decodedBuf = decompressBody(rawBuf, String(res.headers['content-encoding'] || ''))
+          const lowerHeaders: Record<string, string> = {}
+          for (const [hk, hv] of Object.entries(res.headers)) {
+            if (hv !== undefined) {
+              lowerHeaders[hk.toLowerCase()] = Array.isArray(hv) ? hv.join(', ') : String(hv)
+            }
+          }
+          resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            headers: {
+              get(name: string) {
+                return lowerHeaders[name.toLowerCase()] ?? null
+              },
+              getSetCookie() {
+                return setCookieList
+              },
+            },
+            async text() {
+              return decodedBuf.toString('utf8')
+            },
+            async json() {
+              const txt = decodedBuf.toString('utf8')
+              return txt ? JSON.parse(txt) : {}
+            },
+            async arrayBuffer() {
+              return decodedBuf.buffer.slice(
+                decodedBuf.byteOffset,
+                decodedBuf.byteOffset + decodedBuf.byteLength
+              ) as ArrayBuffer
+            },
+          })
+        })
+        res.on('error', (e) => reject(wrapUpstreamErr(e)))
+      }
+    )
+
+    req.on('timeout', () => {
+      req.destroy(
+        wrapUpstreamErr(
+          Object.assign(new Error(`连接上游服务器超时 (${targetUrl.hostname})`), {
+            code: 'ETIMEDOUT',
+          })
+        )
+      )
+    })
+    req.on('error', (e) => reject(wrapUpstreamErr(e)))
+    if (bodyBuf) {
+      req.write(bodyBuf)
+    }
+    req.end()
+  })
+}
+
+/**
+ * 统一高可用上游请求封装：
+ * 1. 使用 Node 原生 https/http（强制 IPv4 + 兼容政务云 SSL 证书链 + 完整浏览器仿真请求头）
+ * 2. 自动重试（最多 2 次）
+ * 3. 杭州图书馆双域名自动故障切换（my1.zjhzlib.cn <-> opac.zjhzlib.cn）
+ */
+async function upstreamFetch(
+  urlInput: string | URL,
+  init?: {
+    method?: string
+    headers?: Record<string, any>
+    body?: any
+    redirect?: 'follow' | 'manual'
+    timeoutMs?: number
+  }
+): Promise<UpstreamResponse> {
+  const primaryUrl = String(urlInput)
+  const candidateUrls = [primaryUrl]
+  if (primaryUrl.includes('://my1.zjhzlib.cn/')) {
+    candidateUrls.push(primaryUrl.replace('://my1.zjhzlib.cn/', '://opac.zjhzlib.cn/'))
+  } else if (primaryUrl.includes('://opac.zjhzlib.cn/')) {
+    candidateUrls.push(primaryUrl.replace('://opac.zjhzlib.cn/', '://my1.zjhzlib.cn/'))
+  }
+
+  let lastError: any = null
+  for (const candidateUrl of candidateUrls) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const isCertErr =
+          lastError &&
+          /CERT|UNABLE_TO_VERIFY|SELF_SIGNED|TLS/i.test(
+            String(lastError?.code || lastError?.message || '')
+          )
+        return await singleNodeHttpRequest(candidateUrl, {
+          ...init,
+          relaxTls: attempt > 0 && isCertErr,
+        })
+      } catch (err: any) {
+        lastError = err
+        if (attempt === 0) {
+          await new Promise((r) => setTimeout(r, 250))
+        }
+      }
+    }
+  }
+  throw lastError || new Error(`请求上游失败: ${primaryUrl}`)
+}
+
+export interface DiagnosticErrorEntry {
+  reqId: string
+  timestamp: string
+  route: string
+  version: string
+  region: string
+  upstreamHost: string
+  errorCode: string
+  durationMs: number
+  message: string
+}
+
+const MAX_DIAGNOSTIC_ERRORS = 30
+const recentDiagnosticErrors: DiagnosticErrorEntry[] = []
+
+/**
+ * 严格脱敏清洗：剥离任何可能包含读者证号、身份证、手机号、条码、Cookie、Token 或长串凭证的字符
+ */
+function sanitizeDiagnosticText(raw: string): string {
+  if (!raw) return ''
+  return String(raw)
+    .replace(/(JSESSIONID|token|password|rdPasswd|rdLoginId|account|cookie)\s*[=:]\s*[^\s;&,]+/gi, '$1=[REDACTED]')
+    .replace(/\b[A-Za-z0-9+/=_.-]{8,}\b/g, (token) => {
+      // 保留常见错误码与已知公共图书馆域名
+      if (
+        /^(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|NETWORK_ERROR|TIMEOUT|HTTP_\d+)$/i.test(
+          token
+        ) ||
+        /^(www\.zjlib\.cn|my1\.zjhzlib\.cn|opac\.zjhzlib\.cn|book-resource\.dataesb\.com|map\.baidu\.com|image\.baidu\.com)$/i.test(
+          token
+        )
+      ) {
+        return token
+      }
+      return '[REDACTED]'
+    })
+    .slice(0, 240)
+}
+
+function formatUpstreamError(err: any, fallbackTitle: string, req?: any, route?: string): string {
+  const code = err?.cause?.code || err?.code || ''
+  const rawMsg = err?.cause?.message || err?.message || ''
+  const upstreamHost = String(err?.upstreamHost || '')
+  const upstreamElapsedMs = Number(err?.upstreamElapsedMs || 0)
+  const reqId = String(req?.__reqId || crypto.randomBytes(3).toString('hex'))
+  const reqDurationMs = req?.__startAt ? Date.now() - Number(req.__startAt) : upstreamElapsedMs
+  const region = process.env.VERCEL_REGION || 'local'
+  const targetRoute = String(route || req?.__route || '/api/unknown')
+
+  const detailParts: string[] = []
+  if (code) detailParts.push(String(code))
+  if (upstreamHost) detailParts.push(upstreamHost)
+  if (upstreamElapsedMs > 0) detailParts.push(`${upstreamElapsedMs}ms`)
+  const detailSuffix = detailParts.length > 0 ? ` (${detailParts.join(', ')})` : ''
+  const diagTag = `[v${versionInfo.version} · ${region}#${reqId}]`
+
+  let userMessage = ''
+  if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT' || rawMsg.includes('超时')) {
+    userMessage = `${fallbackTitle}：连接图书馆官方服务器超时${detailSuffix || ' (TIMEOUT)'}，请稍后重试 ${diagTag}`
+  } else if (code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'EPIPE') {
+    userMessage = `${fallbackTitle}：图书馆服务器重置了连接${detailSuffix}，请稍后重试 ${diagTag}`
+  } else if (rawMsg === 'fetch failed') {
+    userMessage = `${fallbackTitle}：上游图书馆网络连接失败${detailSuffix || ' (NETWORK_ERROR)'}，请稍后重试 ${diagTag}`
+  } else {
+    const cleanRaw = sanitizeDiagnosticText(rawMsg)
+    userMessage = cleanRaw
+      ? `${fallbackTitle}：${cleanRaw}${detailSuffix} ${diagTag}`
+      : `${fallbackTitle}${detailSuffix} ${diagTag}`
+  }
+
+  const diagEntry: DiagnosticErrorEntry = {
+    reqId,
+    timestamp: new Date().toISOString(),
+    route: targetRoute,
+    version: versionInfo.version,
+    region,
+    upstreamHost: upstreamHost || 'none',
+    errorCode: String(code || (err?.statusCode ? `HTTP_${err.statusCode}` : 'ERR_UNKNOWN')),
+    durationMs: reqDurationMs,
+    message: sanitizeDiagnosticText(rawMsg || fallbackTitle),
+  }
+  recentDiagnosticErrors.unshift(diagEntry)
+  if (recentDiagnosticErrors.length > MAX_DIAGNOSTIC_ERRORS) {
+    recentDiagnosticErrors.length = MAX_DIAGNOSTIC_ERRORS
+  }
+  console.error('[LibraryHelperDiag]', JSON.stringify(diagEntry))
+
+  return userMessage
+}
+
+const fetch = upstreamFetch
+
 let coverMemoryCache: Record<string, string> | null = null
 
 const ZJLIB_SM2_PUBLIC_KEY =
@@ -21,77 +397,779 @@ const ZJLIB_ORG_ID = '1916318653650423810'
 const ZJLIB_API_BASE = 'https://www.zjlib.cn/bff-api'
 const COVER_CACHE_FILE = path.resolve(process.cwd(), '.cover-cache.json')
 const FALLBACK_COVER_CACHE_FILE = path.join(os.tmpdir(), 'library-helper-cover-cache.json')
+const MAX_COVER_CACHE_ENTRIES = 3000
+let coverCacheWriteChain: Promise<void> = Promise.resolve()
+let coverCacheMtimeMs = 0
+
+function repairCoverUrl(rawUrl: string): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return ''
+  const cleaned = rawUrl
+    .trim()
+    .replace(/^\/\//, 'https://')
+    .replace(/^http:\/\//i, 'https://')
+    .replace(/(&f=(?:JPEG|PNG|GIF|WEBP))=240=320(?:\?fmt=auto)?/gi, '$1?w=600&h=820')
+  if (cleaned.includes('#hd=')) {
+    const [basePart, hdRaw] = cleaned.split('#hd=')
+    try {
+      const hdDecoded = decodeURIComponent(hdRaw || '')
+      if (
+        /\.(?:360buyimg\.com|winxuancdn\.com|bookuu\.com)\//i.test(hdDecoded) ||
+        /book-resource\.dataesb\.com\/cover\/(?:p|medium)\//i.test(hdDecoded)
+      ) {
+        return hdDecoded
+          .replace(/^http:\/\//i, 'https://')
+          .replace(/(\.360buyimg\.com)\/n\d+\/(?:s\d+x\d+_)?/i, '$1/n0/')
+      }
+    } catch {
+      // ignore
+    }
+    return basePart
+  }
+  return cleaned
+}
+
+function createSafeCacheMap(initial?: Record<string, any>): Record<string, string> {
+  const safeMap: Record<string, string> = Object.create(null)
+  if (initial && typeof initial === 'object') {
+    for (const [k, v] of Object.entries(initial)) {
+      const fixed = typeof v === 'string' ? repairCoverUrl(v) : ''
+      if (
+        k &&
+        k !== '__proto__' &&
+        k !== 'constructor' &&
+        k !== 'prototype' &&
+        fixed &&
+        isSafePublicHttpUrl(fixed) &&
+        !isPlaceholderCoverUrl(fixed)
+      ) {
+        safeMap[k] = fixed
+      }
+    }
+  }
+  return safeMap
+}
+
+function setCoverCacheEntry(cache: Record<string, string>, key: string, url: string): void {
+  const fixed = repairCoverUrl(url)
+  if (
+    !key ||
+    key === '__proto__' ||
+    key === 'constructor' ||
+    key === 'prototype' ||
+    !isSafePublicHttpUrl(fixed) ||
+    isPlaceholderCoverUrl(fixed)
+  ) {
+    return
+  }
+  if (!(key in cache)) {
+    const keys = Object.keys(cache)
+    if (keys.length >= MAX_COVER_CACHE_ENTRIES) {
+      const evictCount = Math.max(1, keys.length - MAX_COVER_CACHE_ENTRIES + 50)
+      for (let i = 0; i < evictCount; i++) {
+        delete cache[keys[i]]
+      }
+    }
+  }
+  cache[key] = fixed
+}
 
 async function loadCoverCache(): Promise<Record<string, string>> {
-  if (coverMemoryCache) return coverMemoryCache
   try {
-    const txt = await fs.readFile(COVER_CACHE_FILE, 'utf8')
-    coverMemoryCache = JSON.parse(txt) || {}
-  } catch {
-    try {
-      const fallbackTxt = await fs.readFile(FALLBACK_COVER_CACHE_FILE, 'utf8')
-      coverMemoryCache = JSON.parse(fallbackTxt) || {}
-    } catch {
-      coverMemoryCache = {}
+    const st = await fs.stat(COVER_CACHE_FILE)
+    if (coverMemoryCache && st.mtimeMs === coverCacheMtimeMs) {
+      return coverMemoryCache
     }
+    const txt = await fs.readFile(COVER_CACHE_FILE, 'utf8')
+    coverMemoryCache = createSafeCacheMap(JSON.parse(txt))
+    coverCacheMtimeMs = st.mtimeMs
+    return coverMemoryCache!
+  } catch {
+    if (coverMemoryCache) return coverMemoryCache
+  }
+  try {
+    const fallbackTxt = await fs.readFile(FALLBACK_COVER_CACHE_FILE, 'utf8')
+    coverMemoryCache = createSafeCacheMap(JSON.parse(fallbackTxt))
+  } catch {
+    coverMemoryCache = createSafeCacheMap()
   }
   return coverMemoryCache!
 }
 
 async function saveCoverCache(cache: Record<string, string>): Promise<void> {
   coverMemoryCache = cache
-  try {
-    await fs.writeFile(COVER_CACHE_FILE, JSON.stringify(cache, null, 2), 'utf8')
-  } catch {
-    try {
-      await fs.writeFile(FALLBACK_COVER_CACHE_FILE, JSON.stringify(cache, null, 2), 'utf8')
-    } catch {
-      // ignore write error in read-only environments
+  const serialized = JSON.stringify(cache, null, 2)
+  coverCacheWriteChain = coverCacheWriteChain.then(async () => {
+    const writeAtomically = async (targetPath: string) => {
+      const tmpPath = `${targetPath}.${process.pid}.tmp`
+      await fs.writeFile(tmpPath, serialized, 'utf8')
+      await fs.rename(tmpPath, targetPath)
     }
-  }
+    try {
+      await writeAtomically(COVER_CACHE_FILE)
+      const st = await fs.stat(COVER_CACHE_FILE).catch(() => null)
+      if (st) coverCacheMtimeMs = st.mtimeMs
+    } catch {
+      try {
+        await writeAtomically(FALLBACK_COVER_CACHE_FILE)
+      } catch {
+        // ignore write error in read-only environments
+      }
+    }
+  })
+  return coverCacheWriteChain
 }
 
 function isPlaceholderCoverUrl(url: string): boolean {
   if (!url) return true
+  const lower = url.toLowerCase()
   return (
-    url.includes('5133167f051e4f9a8c8797b35577ef4f') ||
-    url.includes('3593b961f9094da9887a8cbb2105d18c') ||
-    url.includes('fbc18786cafb44babc3b3b666bb0710c') ||
-    url.includes('1a8b6e68853e4278bd05ed5a05844deb') ||
-    url.includes('tc-cover-prod.oss') ||
-    url.includes('xinhuapic.oss') ||
-    url.includes('doubanio.com') ||
-    url.endsWith('.null')
+    lower.includes('d9fa61ec5b294296a2a53bfe5a167c91') ||
+    lower.includes('fb87c5fae030416d8f9629c56451e355') ||
+    lower.includes('5133167f051e4f9a8c8797b35577ef4f') ||
+    lower.includes('3593b961f9094da9887a8cbb2105d18c') ||
+    lower.includes('fbc18786cafb44babc3b3b666bb0710c') ||
+    lower.includes('1a8b6e68853e4278bd05ed5a05844deb') ||
+    lower.includes('1196498018,785825342') ||
+    lower.includes('1809027890,2934023687') ||
+    lower.includes('bigbg.png') ||
+    lower.includes('default_book') ||
+    lower.includes('no_pic') ||
+    lower.includes('nopic') ||
+    lower.includes('zanwu') ||
+    lower.includes('xinhuapic.oss') ||
+    lower.includes('doubanio.com') ||
+    lower.includes('openbookscan.com.cn:1235') ||
+    lower.includes('=240=320') ||
+    lower.endsWith('.null')
   )
 }
 
-async function searchInternetBookCover(title: string, author: string): Promise<string> {
-  const cleanTitle = title.replace(/[《》「」【】]/g, ' ').trim()
-  const cleanAuthor = author.replace(/\[.*?\]|\(.*?\)|（.*?）|著|绘|编|译/g, ' ').trim()
-  const queries = [
-    `${cleanTitle} ${cleanAuthor} 图书封面`.trim(),
-    `${cleanTitle} 书籍封面`.trim(),
-  ]
-  for (const q of queries) {
-    try {
-      const bdUrl = `https://image.baidu.com/search/acjson?tn=resultjson_com&ipn=rj&ct=201326592&fp=result&word=${encodeURIComponent(q)}&pn=0&rn=5`
-      const bdJson: any = await fetch(bdUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          Referer: 'https://image.baidu.com/',
-        },
-      }).then((r) => r.json())
-      const candidates = (bdJson?.data || []).filter(
-        (d: any) =>
-          (d?.thumbURL || d?.middleURL) &&
-          !isPlaceholderCoverUrl(String(d?.thumbURL || d?.middleURL || ''))
+interface CoverSearchMeta {
+  rawTitle: string
+  cleanTitle: string
+  baseTitle: string
+  subSeries: string
+  partToken: '' | '全集' | '上' | '中' | '下'
+  volNumber: string
+  cleanAuthor: string
+  cleanPublisher: string
+  cleanIsbn: string
+}
+
+const COVER_CN_DIGITS: Record<string, number> = {
+  一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+  壹: 1, 贰: 2, 叁: 3, 肆: 4, 伍: 5, 陆: 6, 柒: 7, 捌: 8, 玖: 9, 拾: 10,
+  Ⅰ: 1, Ⅱ: 2, Ⅲ: 3, Ⅳ: 4, Ⅴ: 5, Ⅵ: 6, Ⅶ: 7, Ⅷ: 8, Ⅸ: 9, Ⅹ: 10,
+}
+
+const COVER_NUM_TO_CN_PAT: Record<string, string> = {
+  '1': '一|壹|Ⅰ|I',
+  '2': '二|贰|Ⅱ|II',
+  '3': '三|叁|Ⅲ|III',
+  '4': '四|肆|Ⅳ|IV',
+  '5': '五|伍|Ⅴ|V',
+  '6': '六|陆|Ⅵ|VI',
+  '7': '七|柒|Ⅶ|VII',
+  '8': '八|捌|Ⅷ|VIII',
+  '9': '九|玖|Ⅸ|IX',
+  '10': '十|拾|Ⅹ|X',
+  '11': '十一|拾壹',
+  '12': '十二|拾贰',
+  '13': '十三|拾叁',
+  '14': '十四|拾肆',
+  '15': '十五|拾伍',
+}
+
+const COVER_ROMAN_TO_NUM: Record<string, string> = {
+  I: '1', II: '2', III: '3', IV: '4', V: '5', VI: '6', VII: '7', VIII: '8', IX: '9', X: '10',
+  Ⅰ: '1', Ⅱ: '2', Ⅲ: '3', Ⅳ: '4', Ⅴ: '5', Ⅵ: '6', Ⅶ: '7', Ⅷ: '8', Ⅸ: '9', Ⅹ: '10',
+}
+
+function numberToChineseVolumePattern(volNumStr: string): string {
+  if (COVER_NUM_TO_CN_PAT[volNumStr]) return COVER_NUM_TO_CN_PAT[volNumStr]
+  const n = parseInt(volNumStr, 10)
+  if (!Number.isFinite(n) || n <= 0 || n >= 200) return ''
+  const cnDigits = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九']
+  const capDigits = ['', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖']
+  if (n < 10) return `${cnDigits[n]}|${capDigits[n]}`
+  if (n === 10) return '十|拾'
+  if (n < 20) {
+    const u = n % 10
+    return `十${cnDigits[u]}|拾${capDigits[u]}`
+  }
+  if (n < 100) {
+    const tens = Math.floor(n / 10)
+    const units = n % 10
+    const norm = `${cnDigits[tens]}十${units ? cnDigits[units] : ''}`
+    const cap = `${capDigits[tens]}拾${units ? capDigits[units] : ''}`
+    return `${norm}|${cap}`
+  }
+  return ''
+}
+
+function parseCoverVolumeToken(raw: string): string {
+  const s = String(raw || '').trim().toUpperCase()
+  if (!s) return ''
+  if (/^\d+$/.test(s)) return String(parseInt(s, 10))
+  if (COVER_ROMAN_TO_NUM[s]) return COVER_ROMAN_TO_NUM[s]
+  let total = 0
+  let cur = 0
+  for (const ch of s) {
+    if (ch === '十' || ch === '拾') {
+      total += (cur || 1) * 10
+      cur = 0
+    } else if (COVER_CN_DIGITS[ch] !== undefined) {
+      cur = COVER_CN_DIGITS[ch]
+    }
+  }
+  const val = total + cur
+  return val > 0 ? String(val) : ''
+}
+
+function extractCoverSearchMeta(
+  rawTitle: string,
+  rawAuthor = '',
+  rawPublisher = '',
+  rawIsbn = ''
+): CoverSearchMeta {
+  const cleanIsbn = String(rawIsbn || '').replace(/[^0-9Xx]/g, '').toUpperCase()
+  const cleanTitle = String(rawTitle || '')
+    .replace(/[《》「」【】]/g, ' ')
+    .replace(/[．·:：；;，,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  const sepParts = String(rawTitle || '')
+    .replace(/[《》「」【】]/g, '')
+    .split(/[．·:：—(（]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+  const baseTitle = (sepParts[0] || cleanTitle)
+    .replace(
+      /\s+(?:上|中|下|全集|全一册|第?[0-9一二三四五六七八九十百壹贰叁肆伍陆柒捌玖拾]+[卷集册部辑篇回]).*$/g,
+      ''
+    )
+    .trim()
+
+  let subSeries = ''
+  for (const seg of sepParts.slice(1)) {
+    if (/^(?:总集篇|专题书|外传|番外|前传|后传|剧场版|公式书|资料集|设定集)$/.test(seg)) {
+      subSeries = seg
+      break
+    }
+  }
+
+  let partToken: '' | '全集' | '上' | '中' | '下' = ''
+  if (/(?:^|[\s．·:：,，（(])(?:全集|全一册|大全集|合订本)(?:[\s．·:：,，）)]|$)/.test(rawTitle)) {
+    partToken = '全集'
+  } else if (/(?:^|[\s．·:：,，（(])上[册卷集部]?(?:[\s．·:：,，）)]|$)/.test(rawTitle)) {
+    partToken = '上'
+  } else if (/(?:^|[\s．·:：,，（(])中[册卷集部]?(?:[\s．·:：,，）)]|$)/.test(rawTitle)) {
+    partToken = '中'
+  } else if (/(?:^|[\s．·:：,，（(])下[册卷集部]?(?:[\s．·:：,，）)]|$)/.test(rawTitle)) {
+    partToken = '下'
+  }
+
+  let volNumber = ''
+  const explicitVol =
+    String(rawTitle || '').match(
+      /[卷集册部辑]\s*第?\s*(\d+|[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|\b(?:I|II|III|IV|V|VI|VII|VIII|IX|X)\b)/i
+    ) ||
+    String(rawTitle || '').match(
+      /第?\s*(\d+|[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)\s*[卷集册部辑]/
+    )
+  if (explicitVol && explicitVol[1]) {
+    volNumber = parseCoverVolumeToken(explicitVol[1])
+  } else {
+    for (const seg of sepParts.slice(1)) {
+      const m = seg.match(
+        /^(\d+|[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|(?:I|II|III|IV|V|VI|VII|VIII|IX|X))(?=\s*[，,．.：:\s]|$)/i
       )
-      if (candidates.length > 0) {
-        const chosen = candidates[0]
-        return String(chosen.thumbURL || chosen.middleURL).replace(/^http:\/\//i, 'https://')
+      if (m && m[1]) {
+        volNumber = parseCoverVolumeToken(m[1])
+        break
+      }
+    }
+  }
+
+  const cleanAuthor =
+    String(rawAuthor || '')
+      .replace(
+        /\[.*?\]|\(.*?\)|（.*?）|原著|主编|编著|改写|著|绘|编|译|撰|[[\]()（）【】「」;；,，/]/g,
+        ' '
+      )
+      .replace(/\s+/g, ' ')
+      .trim()
+      .split(' ')[0] || ''
+
+  const cleanPublisher =
+    String(rawPublisher || '')
+      .replace(
+        /\[.*?\]|\(.*?\)|（.*?）|\d{4}(?:[.\-/年]\d{1,2}(?:[.\-/月]\d{1,2}日?)?)?|[[\]()（）【】「」;；,，/]/g,
+        ' '
+      )
+      .replace(/\s+/g, ' ')
+      .trim()
+      .split(' ')[0] || ''
+
+  return {
+    rawTitle,
+    cleanTitle,
+    baseTitle,
+    subSeries,
+    partToken,
+    volNumber,
+    cleanAuthor,
+    cleanPublisher,
+    cleanIsbn,
+  }
+}
+
+function normalizeTrustedHdImageUrl(rawUrl: string): string {
+  const url = repairCoverUrl(rawUrl)
+  if (!url || !isSafePublicHttpUrl(url) || isPlaceholderCoverUrl(url)) return ''
+  const isDirectImg =
+    /\.(?:jpe?g|png|webp)(?:[?!].*)?$/i.test(url) ||
+    /gips\d\.baidu\.com\/it\/u=/i.test(url) ||
+    /pic\.rmb\.bdstatic\.com\//i.test(url)
+  if (!isDirectImg) return ''
+
+  const trustedHost =
+    /\.(?:360buyimg\.com|winxuancdn\.com|bookuu\.com|alicdn\.com|baidu\.com|bdstatic\.com|kfzimg\.com|zdmimg\.com|smzdm\.com|myqcloud\.com|qq\.com|zhimg\.com)\//i.test(
+      url
+    )
+  if (!trustedHost) return ''
+
+  if (url.includes('.360buyimg.com/')) {
+    return url.replace(/(\.360buyimg\.com)\/n\d+\/(?:s\d+x\d+_)?/i, '$1/n0/')
+  }
+  if (url.includes('.winxuancdn.com/')) {
+    return url.split('?')[0]
+  }
+  return url
+}
+
+function parseImageDimensionsFromBuffer(buf: Buffer): { width: number; height: number } | null {
+  if (!buf || buf.length < 24) return null
+  // PNG
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
+  }
+  // JPEG
+  if (buf[0] === 0xff && buf[1] === 0xd8) {
+    let offset = 2
+    while (offset + 9 < buf.length) {
+      if (buf[offset] !== 0xff) {
+        offset++
+        continue
+      }
+      const marker = buf[offset + 1]
+      if (marker === 0xff) {
+        offset++
+        continue
+      }
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+        offset += 2
+        continue
+      }
+      const segLen = buf.readUInt16BE(offset + 2)
+      if (segLen < 2) break
+      if (
+        (marker >= 0xc0 && marker <= 0xc3) ||
+        (marker >= 0xc5 && marker <= 0xc7) ||
+        (marker >= 0xc9 && marker <= 0xcb) ||
+        (marker >= 0xcd && marker <= 0xcf)
+      ) {
+        return { height: buf.readUInt16BE(offset + 5), width: buf.readUInt16BE(offset + 7) }
+      }
+      offset += 2 + segLen
+    }
+  }
+  return null
+}
+
+interface RawCoverCandidate {
+  title: string
+  host: string
+  w: number
+  h: number
+  thumbUrl: string
+  hdUrl: string
+}
+
+function scoreCoverCandidate(cand: RawCoverCandidate, meta: CoverSearchMeta): number {
+  const rawCandTitle = String(cand.title || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/哪咤/g, '哪吒')
+  const normCandTitle = rawCandTitle.toLowerCase()
+  const host = String(cand.host || '').toLowerCase()
+  const hd = String(cand.hdUrl || '').toLowerCase()
+
+  if (
+    /暂无图片|暂无封面|无封面|默认封面|缺货|下架|nopic|no_pic|default_book/.test(normCandTitle) ||
+    /电影《|动画电影|剧照|壁纸|表情包|手游|角色立绘|票房/.test(rawCandTitle) ||
+    /已消毒|实体仓库|多件更优惠|发货快|可开发票|开具.*发票|图书城|专营店|支持正版|封面有破损|缺页|包退/.test(
+      rawCandTitle
+    )
+  ) {
+    return -999
+  }
+
+  let score = 0
+  const normBase = meta.baseTitle.replace(/哪咤/g, '哪吒').toLowerCase()
+  if (normBase && normCandTitle.includes(normBase)) {
+    score += 50
+  } else {
+    score -= 80
+  }
+
+  if (meta.subSeries) {
+    if (rawCandTitle.includes(meta.subSeries)) {
+      score += 55
+    } else {
+      score -= 120
+    }
+  } else if (/总集篇|专题书/.test(rawCandTitle)) {
+    score -= 75
+  }
+
+  if (meta.partToken) {
+    if (meta.partToken === '全集') {
+      if (/全集|全一册|大全集|合订本/.test(rawCandTitle)) {
+        score += 48
+      } else if (/系列|全\d*册/.test(rawCandTitle)) {
+        score += 18
+      } else if (/(?:^|[^上中下])(?:上册|下册|中册|（上）|（下）|\(上\)|\(下\))/.test(rawCandTitle)) {
+        score -= 85
+      }
+    } else if (meta.partToken === '上') {
+      if (/上册|（上）|\(上\)|[．·\s]上(?:[\s，,）)]|$)/.test(rawCandTitle)) {
+        score += 48
+      } else if (/上下/.test(rawCandTitle)) {
+        score -= 20
+      } else if (/下册|中册|（下）|（中）|\(下\)|\(中\)|全集|全一册/.test(rawCandTitle)) {
+        score -= 85
+      }
+    } else if (meta.partToken === '中') {
+      if (/中册|（中）|\(中\)|[．·\s]中(?:[\s，,）)]|$)/.test(rawCandTitle)) {
+        score += 48
+      } else if (/上册|下册|（上）|（下）|\(上\)|\(下\)|全集|全一册/.test(rawCandTitle)) {
+        score -= 85
+      }
+    } else if (meta.partToken === '下') {
+      if (/下册|（下）|\(下\)|[．·\s]下(?:[\s，,）)]|$)/.test(rawCandTitle)) {
+        score += 48
+      } else if (/上下/.test(rawCandTitle)) {
+        score -= 20
+      } else if (/上册|中册|（上）|（中）|\(上\)|\(中\)|全集|全一册/.test(rawCandTitle)) {
+        score -= 85
+      }
+    }
+  }
+
+  if (meta.volNumber) {
+    const vNum = meta.volNumber
+    const vCnPat = numberToChineseVolumePattern(vNum)
+    const escapedBase = meta.baseTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const subPat = meta.subSeries
+      ? `(?:\\s*[.．·:：(\\（【\\[]?\\s*${meta.subSeries})?`
+      : ''
+    const exactVolRe = new RegExp(
+      `(?:${escapedBase}${subPat}\\s*[.．·:：(\\（【\\[]?\\s*0?${vNum}(?:\\D|$)|第\\s*0?${vNum}\\s*[卷集册部辑回篇季]|[卷集册部辑]\\s*0?${vNum}(?:\\D|$)|(?:^|[\\s.．·:：(\\（【\\[])${vNum}(?:\\s*[卷集册部辑]|\\s*$|[，,：:\\s)）】\\]]))` +
+        (vCnPat
+          ? `|(?:${escapedBase}${subPat}\\s*[.．·:：(\\（【\\[]?\\s*(?:${vCnPat})(?:[)）】\\]：:\\s，,]|$)|第\\s*(?:${vCnPat})\\s*[卷集册部辑回篇季]|[卷集册部辑]\\s*(?:${vCnPat})|[(\\（【\\[](?:${vCnPat})[)）】\\]])`
+          : '')
+    )
+    // 严厉排斥「4本合售 / 1-4 / 1.2.3.4 / 全套 / 套装」等多书书脊立拍图
+    const bundleRe =
+      /合售|\d+\s*[本册]合|[1一壹]\s*[-~至.、,，]\s*[2二贰3三叁4四肆5五伍6六7七8八9九]|全套|套装|大全集|全\d+[册本]|共[0-9一二三四五六七八九十]+[册本]/
+    if (bundleRe.test(rawCandTitle)) {
+      score -= 95
+    } else if (exactVolRe.test(rawCandTitle)) {
+      score += 65
+    } else {
+      const otherVolMatch = rawCandTitle.match(
+        /(?:第\s*(\d+)\s*[卷集册部辑]|[卷集册部辑]\s*(\d+))/
+      )
+      if (otherVolMatch) {
+        const candVol = otherVolMatch[1] || otherVolMatch[2]
+        if (candVol && candVol !== vNum) {
+          score -= 95
+        }
+      } else {
+        score -= 70
+      }
+    }
+  }
+
+  if (meta.cleanAuthor && meta.cleanAuthor.length >= 2) {
+    if (normCandTitle.includes(meta.cleanAuthor.toLowerCase())) {
+      score += 35
+    }
+  }
+  if (meta.cleanPublisher && meta.cleanPublisher.length >= 3) {
+    const shortPub = meta.cleanPublisher.replace(/出版社|出版公司|出版集团/g, '')
+    if (
+      normCandTitle.includes(meta.cleanPublisher.toLowerCase()) ||
+      (shortPub.length >= 2 && normCandTitle.includes(shortPub.toLowerCase()))
+    ) {
+      score += 42
+    }
+  }
+  if (meta.cleanIsbn && normCandTitle.includes(meta.cleanIsbn.toLowerCase())) {
+    score += 75
+  }
+
+  const isBaiduCpsAd =
+    cand.thumbUrl.includes('fm=224') ||
+    cand.thumbUrl.includes('app=112') ||
+    /\/\/t1[345]\.baidu\.com\//i.test(cand.thumbUrl)
+
+  if (
+    /京东自营|当当自营|当当网正版|新华书店|文轩|博库|官方旗舰/.test(rawCandTitle) ||
+    hd.includes('360buyimg.com') ||
+    hd.includes('winxuancdn.com') ||
+    host.includes('baike.baidu.com') ||
+    host.includes('douban.com')
+  ) {
+    score += 65
+  } else if (
+    !isBaiduCpsAd &&
+    (host.includes('jd.com') ||
+      host.includes('京东') ||
+      host.includes('dangdang.com') ||
+      host.includes('当当'))
+  ) {
+    score += 42
+  } else if (
+    /正版|图书|书籍|出版|连环画/.test(rawCandTitle) ||
+    host.includes('kongfz.com') ||
+    host.includes('taobao.com') ||
+    host.includes('tmall.com') ||
+    host.includes('smzdm.com') ||
+    host.includes('edu.cn') ||
+    host.includes('weread.qq.com') ||
+    host.includes('qq.com')
+  ) {
+    score += 25
+  }
+
+  if (/二手|旧书|闲鱼|转转|实拍|九成新|9成新|8成新|绝版旧书/.test(rawCandTitle)) {
+    score -= 45
+  }
+  if (isBaiduCpsAd && !/新华文轩|文轩|博库|官方正版|自营|旗舰/.test(rawCandTitle)) {
+    score -= 30
+  } else if (cand.thumbUrl.includes('fm=253')) {
+    score += 18
+  }
+
+  const w = Number(cand.w || 0)
+  const h = Number(cand.h || 0)
+  if (w > 0 && h > 0) {
+    const ratio = h / w
+    if (ratio >= 1.12 && ratio <= 1.68) {
+      score += 20
+    } else if (ratio >= 0.95 && ratio < 1.12) {
+      score += 12
+    } else if (ratio < 0.8 || ratio > 2.2) {
+      score -= 35
+    }
+    if (w >= 450 && h >= 450) {
+      score += 10
+    }
+  }
+
+  if (cand.hdUrl) {
+    score += 12
+  }
+
+  return score
+}
+
+async function searchInternetBookCover(
+  title: string,
+  author: string,
+  publisher = '',
+  isbn = ''
+): Promise<string> {
+  const meta = extractCoverSearchMeta(title, author, publisher, isbn)
+  const normalizedVolTitle = meta.volNumber
+    ? `${meta.baseTitle} ${meta.subSeries} 第${meta.volNumber}卷`.replace(/\s+/g, ' ').trim()
+    : meta.cleanTitle
+
+  const querySet = new Set<string>()
+  // 若存在 ISBN，将「ISBN + 主书名」作为第 1 并发检索词，精准锁定对应单册版本（如《盗墓笔记(叁)》 9787505723856）
+  if (meta.cleanIsbn) {
+    querySet.add(
+      `${meta.cleanIsbn} ${meta.baseTitle} ${meta.subSeries}`.replace(/\s+/g, ' ').trim()
+    )
+    querySet.add(
+      `${normalizedVolTitle} ${meta.cleanAuthor} ${meta.cleanPublisher} 封面`
+        .replace(/\s+/g, ' ')
+        .trim()
+    )
+    querySet.add(
+      `${meta.cleanTitle} ${meta.cleanAuthor} ${meta.cleanPublisher} 图书封面`
+        .replace(/\s+/g, ' ')
+        .trim()
+    )
+  } else {
+    querySet.add(
+      `${normalizedVolTitle} ${meta.cleanAuthor} ${meta.cleanPublisher} 图书封面`
+        .replace(/\s+/g, ' ')
+        .trim()
+    )
+    querySet.add(
+      `${meta.cleanTitle} ${meta.cleanAuthor} 书籍封面`
+        .replace(/\s+/g, ' ')
+        .trim()
+    )
+  }
+  const queries = [...querySet].filter(Boolean).slice(0, 3)
+
+  const primaryQueries = queries.slice(0, 2)
+  const fetchBaiduQuery = async (q: string): Promise<RawCoverCandidate[]> => {
+    const list: RawCoverCandidate[] = []
+    try {
+      const bdUrl = `https://image.baidu.com/search/acjson?tn=resultjson_com&ipn=rj&ct=201326592&fp=result&word=${encodeURIComponent(q)}&pn=0&rn=12`
+      const rawTxt = await fetch(bdUrl, {
+        headers: {
+          Accept: 'text/plain, */*; q=0.01',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'X-Requested-With': 'XMLHttpRequest',
+          Referer: `https://image.baidu.com/search/index?tn=baiduimage&word=${encodeURIComponent(q)}`,
+          'Sec-Fetch-Dest': 'empty',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin',
+        },
+        timeoutMs: 6000,
+      }).then((r) => r.text())
+
+      try {
+        const bdJson = JSON.parse(rawTxt)
+        for (const d of bdJson?.data || []) {
+          const rawThumb = String(d?.middleURL || d?.thumbURL || d?.hoverURL || '').trim()
+          const thumbUrl = repairCoverUrl(rawThumb)
+          if (!thumbUrl || isPlaceholderCoverUrl(thumbUrl) || !isSafePublicHttpUrl(thumbUrl)) {
+            continue
+          }
+          const rawObj = String(d?.replaceUrl?.[0]?.ObjURL || d?.replaceUrl?.[0]?.ObjUrl || '').trim()
+          const hdUrl = normalizeTrustedHdImageUrl(rawObj)
+          list.push({
+            title: String(d?.fromPageTitleEnc || d?.fromPageTitle || '').trim(),
+            host: String(d?.fromURLHost || d?.replaceUrl?.[0]?.FromURL || '').trim(),
+            w: Number(d?.width || 0),
+            h: Number(d?.height || 0),
+            thumbUrl,
+            hdUrl,
+          })
+        }
+      } catch {
+        const matches = rawTxt.matchAll(/"(?:thumbURL|middleURL)"\s*:\s*"(https?:\\?\/\\?\/[^"]+)"/g)
+        for (const m of matches) {
+          if (m[1]) {
+            const thumbUrl = repairCoverUrl(m[1].replace(/\\\//g, '/'))
+            if (thumbUrl && !isPlaceholderCoverUrl(thumbUrl) && isSafePublicHttpUrl(thumbUrl)) {
+              list.push({
+                title: meta.cleanTitle,
+                host: '',
+                w: 500,
+                h: 667,
+                thumbUrl,
+                hdUrl: '',
+              })
+            }
+          }
+        }
       }
     } catch {
-      // ignore and try next query
+      // ignore single query error
+    }
+    return list
+  }
+
+  const candidateBatches = await Promise.all(primaryQueries.map((q) => fetchBaiduQuery(q)))
+  const pooledCandidates: RawCoverCandidate[] = []
+  const seenThumbUrls = new Set<string>()
+  for (const batch of candidateBatches) {
+    for (const c of batch) {
+      if (seenThumbUrls.has(c.thumbUrl)) continue
+      seenThumbUrls.add(c.thumbUrl)
+      pooledCandidates.push(c)
+    }
+  }
+
+  if (pooledCandidates.length === 0 && queries[2]) {
+    const backupBatch = await fetchBaiduQuery(queries[2])
+    for (const c of backupBatch) {
+      if (!seenThumbUrls.has(c.thumbUrl)) {
+        seenThumbUrls.add(c.thumbUrl)
+        pooledCandidates.push(c)
+      }
+    }
+  }
+
+  if (pooledCandidates.length > 0) {
+    const scored = pooledCandidates
+      .map((c) => ({ cand: c, score: scoreCoverCandidate(c, meta) }))
+      .filter((x) => x.score > -200)
+      .sort((a, b) => b.score - a.score)
+
+    if (scored.length > 0) {
+      const best = scored[0].cand
+      return best.thumbUrl
+    }
+  }
+
+  // 引擎 2：必应图片搜索兜底（www.bing.com/images/async，解析标题与原图 murl 进行多级打分）
+  for (const q of queries.slice(0, 2)) {
+    try {
+      const bingUrl = `https://www.bing.com/images/async?q=${encodeURIComponent(q)}&first=0&count=10&mmasync=1&cc=cn`
+      const html = await fetch(bingUrl, {
+        headers: {
+          Referer: 'https://cn.bing.com/images/',
+        },
+        timeoutMs: 6000,
+      }).then((r) => r.text())
+
+      const bingCands: RawCoverCandidate[] = []
+      const cardMatches = html.matchAll(/m="([^"]+)"/gi)
+      for (const m of cardMatches) {
+        try {
+          const rawJson = (m[1] || '').replace(/&quot;/g, '"').replace(/&amp;/g, '&')
+          const obj = JSON.parse(rawJson)
+          const rawTurl = repairCoverUrl(obj?.turl || '')
+          const hdMurl = normalizeTrustedHdImageUrl(obj?.murl || '')
+          const thumbUrl = hdMurl || rawTurl
+          if (!thumbUrl || isPlaceholderCoverUrl(thumbUrl) || !isSafePublicHttpUrl(thumbUrl)) {
+            continue
+          }
+          bingCands.push({
+            title: String(obj?.t || obj?.desc || '').trim(),
+            host: String(obj?.purl || '').trim(),
+            w: 600,
+            h: 800,
+            thumbUrl,
+            hdUrl: hdMurl,
+          })
+        } catch {
+          // ignore malformed card
+        }
+      }
+
+      if (bingCands.length > 0) {
+        const scored = bingCands
+          .map((c) => ({ cand: c, score: scoreCoverCandidate(c, meta) }))
+          .filter((x) => x.score > -200)
+          .sort((a, b) => b.score - a.score)
+        if (scored.length > 0) {
+          const best = scored[0].cand
+          return best.thumbUrl
+        }
+      }
+    } catch {
+      // ignore
     }
   }
   return ''
@@ -370,19 +1448,35 @@ function buildNormalizedHzlibRecords(
   return { currentRecords, historyRecords }
 }
 
+const MAX_JSON_BODY_BYTES = 256 * 1024 // 256 KB
+
 async function readJsonBody(req: any): Promise<any> {
   if (req.body && typeof req.body === 'object') {
     return req.body
   }
   if (typeof req.body === 'string') {
+    if (Buffer.byteLength(req.body, 'utf8') > MAX_JSON_BODY_BYTES) {
+      throw Object.assign(new Error('请求体过大，已拒绝处理 (最大 256KB)'), { statusCode: 413 })
+    }
     return req.body ? JSON.parse(req.body) : {}
   }
   return new Promise((resolve, reject) => {
     let body = ''
+    let totalBytes = 0
+    let aborted = false
     req.on('data', (chunk: any) => {
-      body += chunk.toString()
+      if (aborted) return
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
+      totalBytes += buf.byteLength
+      if (totalBytes > MAX_JSON_BODY_BYTES) {
+        aborted = true
+        reject(Object.assign(new Error('请求体过大，已拒绝处理 (最大 256KB)'), { statusCode: 413 }))
+        return
+      }
+      body += buf.toString('utf8')
     })
     req.on('end', () => {
+      if (aborted) return
       try {
         resolve(body ? JSON.parse(body) : {})
       } catch (e) {
@@ -391,6 +1485,153 @@ async function readJsonBody(req: any): Promise<any> {
     })
     req.on('error', reject)
   })
+}
+
+// 公开无状态检索/馆藏查询 45 秒微缓存（仅用于 100% 公共书目数据，不含任何用户个人数据）
+const PUBLIC_QUERY_CACHE_TTL_MS = 45 * 1000
+const MAX_PUBLIC_QUERY_CACHE = 150
+const publicQueryCache = new Map<string, { expiresAt: number; payloadJson: string }>()
+
+function getPublicQueryCache(key: string): string | null {
+  const hit = publicQueryCache.get(key)
+  if (!hit) return null
+  if (hit.expiresAt <= Date.now()) {
+    publicQueryCache.delete(key)
+    return null
+  }
+  return hit.payloadJson
+}
+
+function setPublicQueryCache(key: string, payloadObj: any): string {
+  const now = Date.now()
+  if (publicQueryCache.size >= MAX_PUBLIC_QUERY_CACHE) {
+    for (const [k, v] of publicQueryCache.entries()) {
+      if (v.expiresAt <= now) publicQueryCache.delete(k)
+    }
+    if (publicQueryCache.size >= MAX_PUBLIC_QUERY_CACHE) {
+      const oldestKey = publicQueryCache.keys().next().value
+      if (oldestKey) publicQueryCache.delete(oldestKey)
+    }
+  }
+  const payloadJson = JSON.stringify(payloadObj)
+  publicQueryCache.set(key, {
+    expiresAt: now + PUBLIC_QUERY_CACHE_TTL_MS,
+    payloadJson,
+  })
+  return payloadJson
+}
+
+// 公网多用户并发限流器（按 IP + 接口类别滑动窗口计数）
+const RATE_LIMIT_WINDOW_MS = 60 * 1000
+const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>()
+
+function getClientIp(req: any): string {
+  const h = req?.headers || {}
+  // 优先读取 Vercel 边缘网关注入的不可伪造真实 IP 头
+  const xvff = h['x-vercel-forwarded-for']
+  if (typeof xvff === 'string' && xvff.trim()) {
+    return xvff.split(',')[0].trim()
+  }
+  if (typeof h['x-real-ip'] === 'string' && h['x-real-ip'].trim()) {
+    return h['x-real-ip'].trim()
+  }
+  const xff = h['x-forwarded-for']
+  if (typeof xff === 'string' && xff.trim()) {
+    return xff.split(',')[0].trim()
+  }
+  return String(req?.socket?.remoteAddress || '127.0.0.1')
+}
+
+function checkRateLimit(req: any, route: string): { allowed: boolean; retryAfterSec: number } {
+  if (route === '/api/health' || route === '/api/version') {
+    return { allowed: true, retryAfterSec: 0 }
+  }
+  const now = Date.now()
+  if (rateLimitBuckets.size > 5000) {
+    for (const [k, v] of rateLimitBuckets.entries()) {
+      if (v.resetAt <= now) rateLimitBuckets.delete(k)
+    }
+  }
+  const isAuthRoute =
+    route.includes('/sync') ||
+    route.includes('/renew') ||
+    route.includes('/captcha') ||
+    route.includes('/qr')
+  const maxPerMinute = isAuthRoute ? 25 : 80
+  const bucketKey = `${getClientIp(req)}::${isAuthRoute ? 'auth' : 'query'}`
+  const entry = rateLimitBuckets.get(bucketKey)
+  if (!entry || entry.resetAt <= now) {
+    rateLimitBuckets.set(bucketKey, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS })
+    return { allowed: true, retryAfterSec: 0 }
+  }
+  entry.count += 1
+  if (entry.count > maxPerMinute) {
+    return {
+      allowed: false,
+      retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)),
+    }
+  }
+  return { allowed: true, retryAfterSec: 0 }
+}
+
+function applyApiSecurityGuard(req: any, res: any, route: string): boolean {
+  const reqId = crypto.randomBytes(3).toString('hex')
+  req.__reqId = reqId
+  req.__route = route
+  req.__startAt = Date.now()
+  res.setHeader('X-Request-Id', reqId)
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+  res.setHeader('Pragma', 'no-cache')
+  res.setHeader('Expires', '0')
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+
+  if ((req.method || 'GET').toUpperCase() === 'POST') {
+    const headers = req.headers || {}
+    const secFetchSite = String(headers['sec-fetch-site'] || '').toLowerCase()
+    if (secFetchSite === 'cross-site') {
+      res.statusCode = 403
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.end(JSON.stringify({ ok: false, message: '已拦截跨站请求 (CSRF Protection)' }))
+      return false
+    }
+    const origin = String(headers.origin || '').trim()
+    const host = String(headers['x-forwarded-host'] || headers.host || '').trim()
+    if (origin && host) {
+      try {
+        const originHost = new URL(origin).host.toLowerCase()
+        const targetHost = host.split(',')[0].trim().toLowerCase()
+        if (originHost && targetHost && originHost !== targetHost) {
+          res.statusCode = 403
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.end(JSON.stringify({ ok: false, message: '请求来源域名不匹配，已拒绝访问' }))
+          return false
+        }
+      } catch {
+        res.statusCode = 403
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.end(JSON.stringify({ ok: false, message: '非法的 Origin 请求头' }))
+        return false
+      }
+    }
+  }
+
+  const rate = checkRateLimit(req, route)
+  if (!rate.allowed) {
+    res.statusCode = 429
+    res.setHeader('Retry-After', String(rate.retryAfterSec))
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.end(
+      JSON.stringify({
+        ok: false,
+        message: `请求过于频繁，请 ${rate.retryAfterSec} 秒后再试`,
+      })
+    )
+    return false
+  }
+
+  return true
 }
 
 const HZLIB_CAPTCHA_FIELD_NAMES = [
@@ -426,7 +1667,7 @@ const HZLIB_CAPTCHA_FIELD_NAMES = [
   'checkcode',
 ]
 
-async function createHzlibCaptchaSession(ua: string) {
+async function createHzlibCaptchaSession(ua: string, includeCaptchaImage = true) {
   const loginRes = await fetch('https://my1.zjhzlib.cn/opac/reader/login', {
     headers: { 'User-Agent': ua },
   })
@@ -442,6 +1683,10 @@ async function createHzlibCaptchaSession(ua: string) {
   )
   const pemKey = await pemRes.text()
 
+  if (!includeCaptchaImage) {
+    return { sessionCookie, pemKey, captchaImage: '' }
+  }
+
   const vcRes = await fetch(
     `https://my1.zjhzlib.cn/opac/validateCodeImage?r=${Math.random()}`,
     {
@@ -454,16 +1699,83 @@ async function createHzlibCaptchaSession(ua: string) {
   return { sessionCookie, pemKey, captchaImage }
 }
 
-export function registerLibraryApiMiddlewares(server: {
+export function registerLibraryApiMiddlewares(rawServer: {
   middlewares: { use: (route: string, fn: (req: any, res: any, next?: any) => any) => void }
 }) {
-      server.middlewares.use('/api/health', (_req, res) => {
+      const server = {
+        middlewares: {
+          use(route: string, fn: (req: any, res: any, next?: any) => any) {
+            rawServer.middlewares.use(route, async (req: any, res: any, next?: any) => {
+              if (!applyApiSecurityGuard(req, res, route)) return
+              return await fn(req, res, next)
+            })
+          },
+        },
+      }
+      server.middlewares.use('/api/version', (_req, res) => {
         res.setHeader('Content-Type', 'application/json; charset=utf-8')
         res.end(
           JSON.stringify({
             ok: true,
+            version: versionInfo.version,
+            updatedAt: versionInfo.updatedAt,
+            description: versionInfo.description,
+            env: process.env.VERCEL ? 'vercel' : 'local',
+            region: process.env.VERCEL_REGION || 'local',
+            serverTime: new Date().toISOString(),
+          })
+        )
+      })
+
+      server.middlewares.use('/api/health', async (req, res) => {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        const urlObj = new URL(req.url || '', 'http://localhost')
+        const probe = urlObj.searchParams.get('probe') === '1'
+        let upstreams: any = undefined
+        if (probe) {
+          const targets = [
+            { name: 'zjlib_bff', url: 'https://www.zjlib.cn/bff-api' },
+            { name: 'hzlib_primary', url: 'https://my1.zjhzlib.cn/opac/reader/login' },
+            { name: 'hzlib_backup', url: 'https://opac.zjhzlib.cn/opac/reader/login' },
+          ]
+          upstreams = await Promise.all(
+            targets.map(async (t) => {
+              const t0 = Date.now()
+              try {
+                const r = await singleNodeHttpRequest(t.url, {
+                  method: 'GET',
+                  redirect: 'manual',
+                  timeoutMs: 6000,
+                })
+                return {
+                  name: t.name,
+                  host: new URL(t.url).hostname,
+                  ok: r.status > 0 && r.status < 500,
+                  status: r.status,
+                  latencyMs: Date.now() - t0,
+                }
+              } catch (e: any) {
+                return {
+                  name: t.name,
+                  host: new URL(t.url).hostname,
+                  ok: false,
+                  status: 0,
+                  latencyMs: Date.now() - t0,
+                  errorCode: String(e?.code || 'ERR'),
+                }
+              }
+            })
+          )
+        }
+        res.end(
+          JSON.stringify({
+            ok: true,
             status: 'healthy',
+            version: versionInfo.version,
+            region: process.env.VERCEL_REGION || 'local',
             timestamp: new Date().toISOString(),
+            recentErrorCount: recentDiagnosticErrors.length,
+            ...(probe ? { upstreams, recentErrors: recentDiagnosticErrors } : {}),
           })
         )
       })
@@ -472,8 +1784,9 @@ export function registerLibraryApiMiddlewares(server: {
         res.setHeader('Content-Type', 'application/json; charset=utf-8')
         res.end(
           JSON.stringify({
-            ok: Boolean(latestHzlibSyncCache),
-            ...(latestHzlibSyncCache || { records: [] }),
+            ok: false,
+            records: [],
+            message: 'disabled for multi-user isolation',
           })
         )
       })
@@ -510,16 +1823,64 @@ export function registerLibraryApiMiddlewares(server: {
       })
 
       // 0. 杭州图书馆获取图形验证码会话 (/api/hzlib/captcha)
-      server.middlewares.use('/api/hzlib/captcha', async (_req, res) => {
+      server.middlewares.use('/api/hzlib/captcha', async (req, res) => {
         res.setHeader('Content-Type', 'application/json; charset=utf-8')
         try {
+          const urlObj = new URL(req.url || '', 'http://localhost')
+          const mode = (urlObj.searchParams.get('mode') || '').trim()
           const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          const bundle = await createHzlibCaptchaSession(ua)
+          const bundle = await createHzlibCaptchaSession(ua, mode !== 'init')
           res.end(JSON.stringify({ ok: true, ...bundle }))
         } catch (err: any) {
-          res.statusCode = 500
-          res.end(JSON.stringify({ ok: false, message: err?.message || '获取验证码失败' }))
+          res.statusCode = err?.statusCode || 500
+          res.end(
+            JSON.stringify({
+              ok: false,
+              reqId: req.__reqId,
+              message: formatUpstreamError(err, '获取验证码失败', req, '/api/hzlib/captcha'),
+            })
+          )
         }
+      })
+
+      // 0B-0. 浙江图书馆官方封面动态签名重定向代理（解决 tc-cover-prod.oss 签名 2 小时过期问题）
+      server.middlewares.use('/api/covers/zjlib-image', async (req, res) => {
+        try {
+          const urlObj = new URL(req.url || '', 'http://localhost')
+          const isbn = (urlObj.searchParams.get('isbn') || '').replace(/[^0-9Xx]/g, '').toUpperCase()
+          const bibId = (urlObj.searchParams.get('bibId') || '').trim()
+          if (!isbn && !bibId) {
+            res.statusCode = 400
+            res.end('Missing isbn or bibId')
+            return
+          }
+          const zjResp: any = await fetch(
+            `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/getCoverImageByIsbn`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'BFF-ORG-ID': ZJLIB_ORG_ID,
+                Origin: 'https://www.zjlib.cn',
+                Referer: 'https://www.zjlib.cn/',
+              },
+              body: JSON.stringify({ isbn, bibId }),
+              timeoutMs: 5000,
+            }
+          ).then((r) => r.json())
+          const signedUrl = String(zjResp?.data || '').trim()
+          if (zjResp?.code === 200 && signedUrl && isSafePublicHttpUrl(signedUrl)) {
+            res.statusCode = 302
+            res.setHeader('Cache-Control', 'public, max-age=3600')
+            res.setHeader('Location', signedUrl)
+            res.end()
+            return
+          }
+        } catch {
+          // ignore
+        }
+        res.statusCode = 404
+        res.end('Not Found')
       })
 
       // 0B. 批量获取图书封面接口：优先图书馆官方接口(dataesb + 浙图) -> 互联网图书封面兜底 (/api/covers/resolve)
@@ -533,27 +1894,195 @@ export function registerLibraryApiMiddlewares(server: {
         try {
           const body = await readJsonBody(req)
           const forceInternet = Boolean(body.forceInternet)
-          const items: Array<{ id: string; isbn?: string; title?: string; author?: string }> =
-            Array.isArray(body.items) ? body.items.slice(0, 35) : []
+          const items: Array<{
+            id: string
+            isbn?: string
+            title?: string
+            author?: string
+            publisher?: string
+          }> = Array.isArray(body.items) ? body.items.slice(0, 35) : []
           const cache = await loadCoverCache()
           const resolvedById: Record<string, string> = {}
           const unresolved: Array<{
             id: string
             cleanIsbn: string
+            candidateIsbns: string[]
             title: string
             author: string
+            publisher: string
             cacheKey: string
+            legacyIsbnKey: string
+            meta: CoverSearchMeta
           }> = []
 
           for (const item of items) {
             const cleanIsbn = (item.isbn || '').replace(/[^0-9Xx]/g, '').toUpperCase()
             const title = (item.title || '').trim()
             const author = (item.author || '').trim()
-            const cacheKey = cleanIsbn ? `isbn:${cleanIsbn}` : `title:${title}`
-            if (!forceInternet && cache[cacheKey] && !isPlaceholderCoverUrl(cache[cacheKey])) {
-              resolvedById[item.id] = cache[cacheKey]
+            const publisher = (item.publisher || '').trim()
+            const meta = extractCoverSearchMeta(title, author, publisher, cleanIsbn)
+            const hasVolOrPart = Boolean(meta.partToken || meta.volNumber)
+            const legacyIsbnKey = cleanIsbn ? `isbn:${cleanIsbn}` : ''
+            const cacheKey = cleanIsbn
+              ? hasVolOrPart
+                ? `isbn:${cleanIsbn}:${title}`
+                : `isbn:${cleanIsbn}`
+              : `title:${title}|${meta.cleanAuthor}|${meta.cleanPublisher}`
+            const rawHitUrl =
+              cache[cacheKey] ||
+              (!hasVolOrPart && legacyIsbnKey ? cache[legacyIsbnKey] : '') ||
+              (!hasVolOrPart && cache[`title:${title}`] ? cache[`title:${title}`] : '')
+            const hitUrl = rawHitUrl ? repairCoverUrl(rawHitUrl) : ''
+            if (
+              !forceInternet &&
+              hitUrl &&
+              !isPlaceholderCoverUrl(hitUrl)
+            ) {
+              resolvedById[item.id] = hitUrl
             } else {
-              unresolved.push({ id: item.id, cleanIsbn, title, author, cacheKey })
+              unresolved.push({
+                id: item.id,
+                cleanIsbn,
+                candidateIsbns: cleanIsbn ? [cleanIsbn] : [],
+                title,
+                author,
+                publisher,
+                cacheKey,
+                legacyIsbnKey,
+                meta,
+              })
+            }
+          }
+
+          // Step 0: 针对无 ISBN 的借阅记录，或带分卷号但原 ISBN 为多册合订套书 ISBN（如《航海王．幽灵岛．卷五十一》共用套书 ISBN）的记录，通过浙图公开目录检索补全单册精准 ISBN
+          const missingIsbnItems = (forceInternet ? [] : unresolved).filter(
+            (u) => (!u.cleanIsbn || Boolean(u.meta.volNumber)) && Boolean(u.title)
+          )
+          if (missingIsbnItems.length > 0) {
+            const zjLookupConcurrency = 6
+            for (let i = 0; i < missingIsbnItems.length; i += zjLookupConcurrency) {
+              const batch = missingIsbnItems.slice(i, i + zjLookupConcurrency)
+              await Promise.all(
+                batch.map(async (u) => {
+                  try {
+                    const cleanKw =
+                      u.title
+                        .replace(/[《》「」【】()（）．·:：；;，,]/g, ' ')
+                        .replace(/\b(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|II|III|IV|VI|VII|VIII|IX|\d+)\b/gi, ' ')
+                        .replace(/\s+[a-zA-Z\s]+$/g, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim() || u.title
+                    const rawVolPhrase = (
+                      u.title.match(
+                        /第?\s*[0-9一二三四五六七八九十百壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*[卷集册部辑]|[卷集册部辑]\s*[0-9一二三四五六七八九十百壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+/
+                      ) || ['']
+                    )[0].trim()
+                    const volDirectKw =
+                      rawVolPhrase && u.meta.baseTitle
+                        ? [u.meta.baseTitle, u.meta.subSeries, rawVolPhrase]
+                            .filter(Boolean)
+                            .join(' ')
+                            .trim()
+                        : ''
+                    const kwSet = [...new Set([volDirectKw, cleanKw].filter(Boolean))]
+                    const respList = await Promise.all(
+                      kwSet.map((kw) =>
+                        fetch(`${ZJLIB_API_BASE}/search-admin-service/open-api/search/pageList`, {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json;charset=UTF-8',
+                            'BFF-ORG-ID': ZJLIB_ORG_ID,
+                            Origin: 'https://www.zjlib.cn',
+                            Referer: 'https://www.zjlib.cn/ResultList',
+                          },
+                          body: JSON.stringify({
+                            metadataType: 'work',
+                            current: 1,
+                            size: 10,
+                            query: [
+                              {
+                                id: 0,
+                                key: 'title',
+                                value: kw,
+                                match: 'phrase_fuzzy',
+                                condition: 'and',
+                              },
+                            ],
+                            sortBy: [],
+                          }),
+                          timeoutMs: 4500,
+                        })
+                          .then((r) => r.json())
+                          .catch(() => null)
+                      )
+                    )
+                    const records: any[] = respList.flatMap((r) => r?.data?.records || [])
+                    const scoredRecs = records
+                      .map((rec: any) => {
+                        const rTitle = String(
+                          Array.isArray(rec.title) ? rec.title[0] : rec.title || ''
+                        ).trim()
+                        const rPub = String(
+                          Array.isArray(rec.publisher) ? rec.publisher[0] : rec.publisher || ''
+                        ).trim()
+                        const rIsbnRaw = Array.isArray(rec.identifierIsbn)
+                          ? rec.identifierIsbn[0]
+                          : rec.identifierIsbn || ''
+                        const rIsbn = String(rIsbnRaw).replace(/[^0-9Xx]/g, '').toUpperCase()
+                        if (rIsbn.length < 10) return null
+                        const rMeta = extractCoverSearchMeta(rTitle, '', rPub, rIsbn)
+                        if (rMeta.baseTitle !== u.meta.baseTitle) return null
+                        if (rMeta.subSeries !== u.meta.subSeries) return null
+                        let matchScore = 0
+                        if (rMeta.baseTitle === u.meta.baseTitle) matchScore += 40
+                        if (u.meta.volNumber) {
+                          if (rMeta.volNumber === u.meta.volNumber) {
+                            matchScore += 60
+                            // 优先单行本编目（如《航海王．卷五十一》优于多册共用套书ISBN的《航海王．幽灵岛．11名超新星．卷五十一》）
+                            const segCount = rTitle.split(/[．·:：]/).length
+                            if (segCount <= 2) matchScore += 18
+                          } else if (rMeta.volNumber && rMeta.volNumber !== u.meta.volNumber) {
+                            return null
+                          }
+                        }
+                        if (u.meta.partToken && rMeta.partToken === u.meta.partToken) {
+                          matchScore += 50
+                        }
+                        if (matchScore <= 0) return null
+                        return { rIsbn, rPub, matchScore }
+                      })
+                      .filter(Boolean) as Array<{
+                      rIsbn: string
+                      rPub: string
+                      matchScore: number
+                    }>
+                    scoredRecs.sort((a, b) => b.matchScore - a.matchScore)
+                    const orderedIsbns: string[] = []
+                    for (const sr of scoredRecs) {
+                      if (!orderedIsbns.includes(sr.rIsbn) && orderedIsbns.length < 5) {
+                        orderedIsbns.push(sr.rIsbn)
+                      }
+                      if (!u.publisher && sr.rPub) {
+                        u.publisher = sr.rPub
+                        u.meta = extractCoverSearchMeta(
+                          u.title,
+                          u.author,
+                          u.publisher,
+                          u.cleanIsbn
+                        )
+                      }
+                    }
+                    if (u.cleanIsbn && !orderedIsbns.includes(u.cleanIsbn)) {
+                      orderedIsbns.push(u.cleanIsbn)
+                    }
+                    if (orderedIsbns.length > 0) {
+                      u.candidateIsbns = orderedIsbns
+                    }
+                  } catch {
+                    // ignore single lookup error
+                  }
+                })
+              )
             }
           }
 
@@ -561,37 +2090,118 @@ export function registerLibraryApiMiddlewares(server: {
           const isbnsToQuery = [
             ...new Set(
               (forceInternet ? [] : unresolved)
-                .map((u) => u.cleanIsbn)
+                .flatMap((u) => u.candidateIsbns)
                 .filter((s) => s.length >= 10)
             ),
           ]
-          const isbnCoverMap: Record<string, string> = {}
+          const isbnCoverMap: Record<string, { url: string; qualityScore: number }> = {}
           if (isbnsToQuery.length > 0) {
             try {
               const url = `https://book-resource.dataesb.com/websearch/metares?glc=P1ZJ0571001&cmdACT=getImages&type=0&isbns=${isbnsToQuery.join(',')}&callback=cb`
               const txt = await fetch(url, {
                 headers: { 'User-Agent': 'Mozilla/5.0' },
+                timeoutMs: 6000,
               }).then((r) => r.text())
-              const jsonStr = txt.replace(/^cb\(/, '').replace(/\);?\s*$/, '')
+              const jsonStr = txt.trim().replace(/^cb\(/, '').replace(/\);?\s*$/, '')
               const parsed = JSON.parse(jsonStr)
-              for (const entry of parsed.result || []) {
-                const link = entry.resourceLink || entry.coverlink || ''
-                if (entry.isbn && link && !isPlaceholderCoverUrl(link)) {
-                  // 校验返回的链接是否真实可访问且非“暂无封面”占位图(13498 / 37458 / <=2500 bytes)
+              const groupedByIsbn: Record<
+                string,
+                Array<{ resourceLink: string; hdCoverLink: string; width: number; height: number }>
+              > = {}
+              const rawEntries: any[] = Array.isArray(parsed.result) ? parsed.result : []
+              await Promise.all(
+                rawEntries.map(async (entry) => {
+                const rawCoverLink = String(entry.coverlink || '').trim()
+                if (
+                  rawCoverLink &&
+                  /bigbg\.png|default_book|book-default|no_pic|nopic|zanwu/i.test(rawCoverLink)
+                ) {
+                  return
+                }
+                const link = repairCoverUrl(entry.resourceLink || rawCoverLink || '')
+                const hdCoverLink = normalizeTrustedHdImageUrl(rawCoverLink)
+                if (
+                  entry.isbn &&
+                  link &&
+                  isSafePublicHttpUrl(link) &&
+                  !isPlaceholderCoverUrl(link)
+                ) {
+                  // 拉取前 4KB 校验真实可访问、非占位图，并直接读取 JPEG/PNG 宽高比以识别多册套书横图
                   try {
-                    const headRes = await fetch(link, { method: 'HEAD' })
-                    const len = Number(headRes.headers.get('content-length') || 0)
+                    const probeRes = await fetch(link, {
+                      method: 'GET',
+                      headers: { Range: 'bytes=0-4095', 'Accept-Encoding': 'identity' },
+                      timeoutMs: 4000,
+                    })
+                    const cRange = String(probeRes.headers.get('content-range') || '')
+                    const totalFromRange = cRange.includes('/')
+                      ? Number(cRange.split('/')[1] || 0)
+                      : 0
+                    const len =
+                      totalFromRange || Number(probeRes.headers.get('content-length') || 0)
+                    const ctype = String(probeRes.headers.get('content-type') || '').toLowerCase()
                     if (
-                      headRes.ok &&
-                      len > 2500 &&
+                      probeRes.ok &&
+                      (len > 2500 || (len === 0 && ctype.includes('image'))) &&
+                      len !== 5687 &&
+                      len !== 12177 &&
                       len !== 13498 &&
                       len !== 37458
                     ) {
-                      isbnCoverMap[String(entry.isbn).toUpperCase()] = link
+                      const probeBuf = Buffer.from(await probeRes.arrayBuffer())
+                      const dim = parseImageDimensionsFromBuffer(probeBuf)
+                      const isbnKey = String(entry.isbn).toUpperCase()
+                      if (!groupedByIsbn[isbnKey]) groupedByIsbn[isbnKey] = []
+                      groupedByIsbn[isbnKey].push({
+                        resourceLink: link,
+                        hdCoverLink,
+                        width: dim?.width || 0,
+                        height: dim?.height || 0,
+                      })
                     }
                   } catch {
                     // ignore invalid link
                   }
+                }
+                })
+              )
+              for (const [isbnKey, list] of Object.entries(groupedByIsbn)) {
+                // 优先选择竖版单书高清封面 (/cover/medium/ 或 /cover/p/ 且高宽比 >= 0.98)，规避无印良品式多册并排套书横图
+                const highQualityItem = list.find(
+                  (x) =>
+                    (x.resourceLink.includes('/cover/medium/') ||
+                      x.resourceLink.includes('/cover/p/')) &&
+                    (x.width === 0 || x.height >= x.width * 0.98)
+                )
+                const anyHighQualityItem = list.find(
+                  (x) =>
+                    x.resourceLink.includes('/cover/medium/') ||
+                    x.resourceLink.includes('/cover/p/')
+                )
+                const externalHd = list.find((x) => Boolean(x.hdCoverLink))?.hdCoverLink || ''
+                const thumbItem = list[0]
+                if (highQualityItem) {
+                  const ratio =
+                    highQualityItem.width > 0
+                      ? highQualityItem.height / highQualityItem.width
+                      : 1.35
+                  isbnCoverMap[isbnKey] = {
+                    url: highQualityItem.resourceLink,
+                    qualityScore: ratio >= 1.12 ? 100 : 88,
+                  }
+                } else if (
+                  externalHd &&
+                  /\.(?:360buyimg\.com|winxuancdn\.com|bookuu\.com)\//i.test(externalHd)
+                ) {
+                  isbnCoverMap[isbnKey] = { url: externalHd, qualityScore: 76 }
+                } else if (anyHighQualityItem) {
+                  // 横图套书封面（如 540x499 八册并排图）降低优先级，仅在无单册竖图时兜底
+                  isbnCoverMap[isbnKey] = {
+                    url: anyHighQualityItem.resourceLink,
+                    qualityScore: 30,
+                  }
+                } else if (thumbItem) {
+                  isbnCoverMap[isbnKey] = { url: thumbItem.resourceLink, qualityScore: 60 }
                 }
               }
             } catch {
@@ -601,10 +2211,28 @@ export function registerLibraryApiMiddlewares(server: {
 
           const needInternetFallback: typeof unresolved = []
           for (const u of unresolved) {
-            if (u.cleanIsbn && isbnCoverMap[u.cleanIsbn]) {
-              const url = isbnCoverMap[u.cleanIsbn]
+            let bestHit: { url: string; qualityScore: number } | null = null
+            for (let idx = 0; idx < u.candidateIsbns.length; idx++) {
+              const candIsbn = u.candidateIsbns[idx]
+              const hit = isbnCoverMap[candIsbn]
+              if (!hit) continue
+              // 兼顾 Zjlib 书目匹配顺序（idx 越小越优先）与封面自身竖版单书质量分
+              const effectiveScore = hit.qualityScore - idx * 3
+              if (!bestHit || effectiveScore > bestHit.qualityScore) {
+                bestHit = { url: hit.url, qualityScore: effectiveScore }
+              }
+            }
+            if (bestHit && bestHit.url) {
+              const url = bestHit.url
               resolvedById[u.id] = url
-              cache[u.cacheKey] = url
+              setCoverCacheEntry(cache, u.cacheKey, url)
+              if (u.legacyIsbnKey) setCoverCacheEntry(cache, u.legacyIsbnKey, url)
+              if (!u.meta.partToken && !u.meta.volNumber) {
+                setCoverCacheEntry(cache, `title:${u.title}`, url)
+                if (u.candidateIsbns[0]) {
+                  setCoverCacheEntry(cache, `isbn:${u.candidateIsbns[0]}`, url)
+                }
+              }
             } else {
               needInternetFallback.push(u)
             }
@@ -617,10 +2245,21 @@ export function registerLibraryApiMiddlewares(server: {
             await Promise.all(
               chunk.map(async (u) => {
                 if (!u.title) return
-                const imgUrl = await searchInternetBookCover(u.title, u.author)
-                if (imgUrl) {
+                const imgUrl = await searchInternetBookCover(
+                  u.title,
+                  u.author,
+                  u.publisher,
+                  u.cleanIsbn || u.candidateIsbns[0] || ''
+                )
+                if (imgUrl && isSafePublicHttpUrl(imgUrl)) {
                   resolvedById[u.id] = imgUrl
-                  cache[u.cacheKey] = imgUrl
+                  setCoverCacheEntry(cache, u.cacheKey, imgUrl)
+                  if (!u.meta.partToken && !u.meta.volNumber) {
+                    setCoverCacheEntry(cache, `title:${u.title}`, imgUrl)
+                    if (u.candidateIsbns[0]) {
+                      setCoverCacheEntry(cache, `isbn:${u.candidateIsbns[0]}`, imgUrl)
+                    }
+                  }
                 }
               })
             )
@@ -629,8 +2268,14 @@ export function registerLibraryApiMiddlewares(server: {
           await saveCoverCache(cache)
           res.end(JSON.stringify({ ok: true, covers: resolvedById }))
         } catch (err: any) {
-          res.statusCode = 500
-          res.end(JSON.stringify({ ok: false, message: err?.message || '获取封面失败' }))
+          res.statusCode = err?.statusCode || 500
+          res.end(
+            JSON.stringify({
+              ok: false,
+              reqId: req.__reqId,
+              message: formatUpstreamError(err, '获取封面失败', req, '/api/covers/resolve'),
+            })
+          )
         }
       })
 
@@ -680,12 +2325,20 @@ export function registerLibraryApiMiddlewares(server: {
           const keyword = String(body.keyword || '').trim()
           const branch: string = String(body.branch || body.scope || 'all').trim()
           const onlyAvailable: boolean = body.onlyAvailable !== false
+          const autoGroup: boolean = body.autoGroup === true
           const rows = Math.min(Number(body.rows) || 15, 24)
           const page = Math.max(1, Number(body.page) || 1)
           const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 
           if (!keyword) {
             res.end(JSON.stringify({ ok: true, items: [], zjTotal: 0, hzTotal: 0, hasMore: false }))
+            return
+          }
+
+          const searchCacheKey = `search::${keyword.toLowerCase()}::${branch}::${onlyAvailable ? '1' : '0'}::${autoGroup ? '1' : '0'}::${rows}::${page}`
+          const cachedSearchJson = getPublicQueryCache(searchCacheKey)
+          if (cachedSearchJson) {
+            res.end(cachedSearchJson)
             return
           }
 
@@ -917,7 +2570,7 @@ export function registerLibraryApiMiddlewares(server: {
                       zjTitleResp?.data?.total || zjFullResp?.data?.total || mergedRaw.length
                     )
                     const rawCandidates = mergedRaw
-                      .map((r: any) => {
+                      .map((r: any, idx: number) => {
                         const bibId = String(
                           Array.isArray(r.originalId) ? r.originalId[0] : r.originalId || r.id || ''
                         ).trim()
@@ -962,10 +2615,12 @@ export function registerLibraryApiMiddlewares(server: {
                           availableBranches: [] as string[],
                           holdings: [] as any[],
                           _rel: calcRelevance(title, author, isbn),
+                          _rawOrder: idx,
                         }
                       })
                       .filter((x) => Boolean(x.title && x.bibId))
                       .sort((a, b) => {
+                        if (!autoGroup) return a._rawOrder - b._rawOrder
                         if (a._rel !== b._rel) return a._rel - b._rel
                         return toNaturalTitleKey(a.title).localeCompare(
                           toNaturalTitleKey(b.title),
@@ -1403,7 +3058,10 @@ export function registerLibraryApiMiddlewares(server: {
               : Promise.resolve({ total: 0, items: [], rawCount: 0, pageSize: 20 })
 
           const [zjRes, hzRes] = await Promise.all([zjPromise, hzPromise])
-          let combined = [...zjRes.items, ...hzRes.items]
+          let combined = [...zjRes.items, ...hzRes.items].map((it, idx) => ({
+            ...it,
+            _rawOrder: idx,
+          }))
 
           // 若用户输入了目标卷/集编号（如 "5卷" / "卷五"），优先过滤只保留命中该卷号的书；若 0 命中则兜底保留主书名结果
           if (targetVolNum) {
@@ -1415,18 +3073,20 @@ export function registerLibraryApiMiddlewares(server: {
             }
           }
 
-          combined.sort((a, b) => {
-            if (a._rel !== b._rel) return a._rel - b._rel
-            const natCmp = toNaturalTitleKey(a.title).localeCompare(
-              toNaturalTitleKey(b.title),
-              'zh-CN'
-            )
-            if (natCmp !== 0) return natCmp
-            if ((b.availableCount > 0) !== (a.availableCount > 0)) {
-              return Number(b.availableCount > 0) - Number(a.availableCount > 0)
-            }
-            return 0
-          })
+          if (autoGroup) {
+            combined.sort((a, b) => {
+              if (a._rel !== b._rel) return a._rel - b._rel
+              const natCmp = toNaturalTitleKey(a.title).localeCompare(
+                toNaturalTitleKey(b.title),
+                'zh-CN'
+              )
+              if (natCmp !== 0) return natCmp
+              if ((b.availableCount > 0) !== (a.availableCount > 0)) {
+                return Number(b.availableCount > 0) - Number(a.availableCount > 0)
+              }
+              return 0
+            })
+          }
 
           const zjPageLimit = targetVolNum ? 24 : 12
           const zjHasMore = needZj && zjRes.rawCount >= zjPageLimit && page * zjPageLimit < zjRes.total
@@ -1435,7 +3095,7 @@ export function registerLibraryApiMiddlewares(server: {
           const hasMore = (zjHasMore || hzHasMore) && combined.length > 0 && page < 15
 
           res.end(
-            JSON.stringify({
+            setPublicQueryCache(searchCacheKey, {
               ok: true,
               page,
               hasMore,
@@ -1445,8 +3105,14 @@ export function registerLibraryApiMiddlewares(server: {
             })
           )
         } catch (err: any) {
-          res.statusCode = 500
-          res.end(JSON.stringify({ ok: false, message: err?.message || '在线检索馆藏出错' }))
+          res.statusCode = err?.statusCode || 500
+          res.end(
+            JSON.stringify({
+              ok: false,
+              reqId: req.__reqId,
+              message: formatUpstreamError(err, '在线检索馆藏出错', req, '/api/catalog/search'),
+            })
+          )
         }
       })
 
@@ -1466,6 +3132,12 @@ export function registerLibraryApiMiddlewares(server: {
           const title: string = String(body.title || '').trim()
           const callNo: string = String(body.callNo || '').trim()
           const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          const holdingCacheKey = `holding::${library}::${bibId}::${isbn}::${callNo}::${title}`
+          const cachedHoldingJson = getPublicQueryCache(holdingCacheKey)
+          if (cachedHoldingJson) {
+            res.end(cachedHoldingJson)
+            return
+          }
 
           if (library === 'hzlib') {
             // If bibId is missing, search by ISBN, callNo, or title on my1.zjhzlib.cn/opac/search
@@ -1554,7 +3226,7 @@ export function registerLibraryApiMiddlewares(server: {
             holdings.splice(0, holdings.length, ...sortedHzHoldings)
 
             res.end(
-              JSON.stringify({
+              setPublicQueryCache(holdingCacheKey, {
                 ok: true,
                 library: 'hzlib',
                 bibId,
@@ -1720,7 +3392,7 @@ export function registerLibraryApiMiddlewares(server: {
             holdings.find((h) => h.isAvailable && h.navUrl) || holdings.find((h) => h.navUrl)
 
           res.end(
-            JSON.stringify({
+            setPublicQueryCache(holdingCacheKey, {
               ok: true,
               library: 'zjlib',
               bibId,
@@ -1733,8 +3405,14 @@ export function registerLibraryApiMiddlewares(server: {
             })
           )
         } catch (err: any) {
-          res.statusCode = 500
-          res.end(JSON.stringify({ ok: false, message: err?.message || '查询馆藏状态失败' }))
+          res.statusCode = err?.statusCode || 500
+          res.end(
+            JSON.stringify({
+              ok: false,
+              reqId: req.__reqId,
+              message: formatUpstreamError(err, '查询馆藏状态失败', req, '/api/holding/query'),
+            })
+          )
         }
       })
 
@@ -1762,9 +3440,11 @@ export function registerLibraryApiMiddlewares(server: {
             let token: string = String(body.token || '').trim()
             const account: string = String(body.account || '').trim()
             const password: string = String(body.password || '')
+            const encryptedPasswordInput: string = String(body.encryptedPassword || '').trim()
 
-            if (!token && account && password) {
-              const encryptedPassword = encryptZjlibPassword(password)
+            if (!token && account && (encryptedPasswordInput || password)) {
+              const encryptedPassword =
+                encryptedPasswordInput || encryptZjlibPassword(password)
               const loginResp: any = await fetch(
                 `${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/login`,
                 {
@@ -1841,9 +3521,15 @@ export function registerLibraryApiMiddlewares(server: {
               }
             ).then((r) => r.json())
 
-            if (renewResp?.code === 401 && account && password && body.token) {
+            if (
+              renewResp?.code === 401 &&
+              account &&
+              (encryptedPasswordInput || password) &&
+              body.token
+            ) {
               // Token expired, retry with account/password login once
-              const encryptedPassword = encryptZjlibPassword(password)
+              const encryptedPassword =
+                encryptedPasswordInput || encryptZjlibPassword(password)
               const loginResp: any = await fetch(
                 `${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/login`,
                 {
@@ -1909,24 +3595,27 @@ export function registerLibraryApiMiddlewares(server: {
           // 2. 杭州图书馆在线续借
           const account: string = String(body.account || '').trim()
           const password: string = String(body.password || '')
+          const encryptedPasswordInput: string = String(body.encryptedPassword || '').trim()
+          const clientSessionCookie: string = String(body.sessionCookie || body.cookie || '').trim()
+          const loginSessionCookie: string = String(body.loginSessionCookie || '').trim()
           const captchaCode: string = String(body.captchaCode || '').trim()
           const captchaSessionCookie: string = String(body.captchaSessionCookie || '').trim()
           const captchaPemKey: string = String(body.captchaPemKey || '').trim()
 
-          if (!lastHzlibSessionCookie && (!account || !password)) {
+          if (!clientSessionCookie && (!account || (!encryptedPasswordInput && !password))) {
             res.end(
               JSON.stringify({
                 ok: false,
-                message: '未检测到本地保存的杭州图书馆账号密码，请先在「导入/更新记录」中登录并勾选保存',
+                message: '未检测到当前浏览器的杭州图书馆账号凭证，请先在「导入/更新记录」中登录并勾选保存',
               })
             )
             return
           }
 
-          let sessionCookie = lastHzlibSessionCookie
+          let sessionCookie = clientSessionCookie
           let renewListHtml = ''
 
-          // 先尝试复用缓存的杭图登录会话获取 renewList（同时包含 pdsToken 与精确续借次数）
+          // 仅尝试复用当前客户端传入的杭图登录会话获取 renewList（绝不跨用户共享）
           if (sessionCookie && !captchaCode) {
             const testResp = await fetch(
               'https://my1.zjhzlib.cn/opac/loan/renewList?page=1&rows=100',
@@ -1946,10 +3635,22 @@ export function registerLibraryApiMiddlewares(server: {
 
           if (!sessionCookie) {
             let pemKey = ''
-            if (captchaCode && captchaSessionCookie && captchaPemKey) {
+            let encryptedPwd = encryptedPasswordInput
+            if (captchaCode && captchaSessionCookie && (encryptedPwd || captchaPemKey)) {
               sessionCookie = captchaSessionCookie
               pemKey = captchaPemKey
+            } else if (encryptedPwd && (loginSessionCookie || captchaSessionCookie)) {
+              sessionCookie = loginSessionCookie || captchaSessionCookie
             } else {
+              if (!password) {
+                res.end(
+                  JSON.stringify({
+                    ok: false,
+                    message: '杭州图书馆登录会话已过期，请在「导入/更新记录」中重新登录同步',
+                  })
+                )
+                return
+              }
               const loginPageResp = await fetch('https://my1.zjhzlib.cn/opac/reader/login', {
                 headers: { 'User-Agent': ua },
               })
@@ -1966,7 +3667,9 @@ export function registerLibraryApiMiddlewares(server: {
               pemKey = await pemResp.text()
             }
 
-            const encryptedPwd = encryptHzlibPassword(password, pemKey)
+            if (!encryptedPwd) {
+              encryptedPwd = encryptHzlibPassword(password, pemKey)
+            }
             const formData = new URLSearchParams()
             formData.set('vToken', '')
             formData.set('rdLoginId', account)
@@ -2013,7 +3716,6 @@ export function registerLibraryApiMiddlewares(server: {
               }
             }
 
-            lastHzlibSessionCookie = sessionCookie
             const curResp0 = await fetch(
               'https://my1.zjhzlib.cn/opac/loan/renewList?page=1&rows=100',
               { headers: { Cookie: sessionCookie, 'User-Agent': ua } }
@@ -2091,14 +3793,21 @@ export function registerLibraryApiMiddlewares(server: {
           res.end(
             JSON.stringify({
               ok: isSuccess,
+              sessionCookie,
               dueDate: newDueDate,
               renewCount: updatedRenewCount,
               message: msg,
             })
           )
         } catch (err: any) {
-          res.statusCode = 500
-          res.end(JSON.stringify({ ok: false, message: err?.message || '在线续借请求失败' }))
+          res.statusCode = err?.statusCode || 500
+          res.end(
+            JSON.stringify({
+              ok: false,
+              reqId: req.__reqId,
+              message: formatUpstreamError(err, '在线续借请求失败', req, '/api/loan/renew'),
+            })
+          )
         }
       })
 
@@ -2156,8 +3865,14 @@ export function registerLibraryApiMiddlewares(server: {
             })
           )
         } catch (err: any) {
-          res.statusCode = 500
-          res.end(JSON.stringify({ ok: false, message: err?.message || '获取浙图二维码出错' }))
+          res.statusCode = err?.statusCode || 500
+          res.end(
+            JSON.stringify({
+              ok: false,
+              reqId: req.__reqId,
+              message: formatUpstreamError(err, '获取浙图二维码出错', req, '/api/zjlib/qr'),
+            })
+          )
         }
       })
 
@@ -2174,10 +3889,12 @@ export function registerLibraryApiMiddlewares(server: {
           let token: string = (body.token || '').trim()
           const account: string = (body.account || '').trim()
           const password: string = body.password || ''
+          const encryptedPasswordInput: string = String(body.encryptedPassword || '').trim()
           const maxPages: number = Math.min(Number(body.maxPages) || 20, 50)
 
-          if (!token && account && password) {
-            const encryptedPassword = encryptZjlibPassword(password)
+          if (!token && account && (encryptedPasswordInput || password)) {
+            const encryptedPassword =
+              encryptedPasswordInput || encryptZjlibPassword(password)
             const loginResp = await fetch(`${ZJLIB_API_BASE}/reader-sso-service/portal-pc-api/login`, {
               method: 'POST',
               headers: {
@@ -2325,8 +4042,14 @@ export function registerLibraryApiMiddlewares(server: {
             })
           )
         } catch (err: any) {
-          res.statusCode = 500
-          res.end(JSON.stringify({ ok: false, message: err?.message || '同步浙江图书馆出错' }))
+          res.statusCode = err?.statusCode || 500
+          res.end(
+            JSON.stringify({
+              ok: false,
+              reqId: req.__reqId,
+              message: formatUpstreamError(err, '同步浙江图书馆出错', req, '/api/zjlib/sync'),
+            })
+          )
         }
       })
 
@@ -2342,7 +4065,9 @@ export function registerLibraryApiMiddlewares(server: {
           const body = await readJsonBody(req)
           const account: string = (body.account || '').trim()
           const password: string = body.password || ''
+          const encryptedPasswordInput: string = String(body.encryptedPassword || '').trim()
           let sessionCookie: string = (body.cookie || '').trim()
+          const loginSessionCookie: string = String(body.loginSessionCookie || '').trim()
           const captchaCode: string = (body.captchaCode || '').trim()
           const captchaSessionCookie: string = (body.captchaSessionCookie || '').trim()
           const captchaPemKey: string = (body.captchaPemKey || '').trim()
@@ -2351,14 +4076,17 @@ export function registerLibraryApiMiddlewares(server: {
           const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 
           if (!sessionCookie) {
-            if (!account || !password) {
+            if (!account || (!encryptedPasswordInput && !password)) {
               res.end(JSON.stringify({ ok: false, message: '请输入杭州图书馆读者证号/身份证号与密码' }))
               return
             }
             let pemKey = ''
-            if (captchaCode && captchaSessionCookie && captchaPemKey) {
+            let encryptedPwd = encryptedPasswordInput
+            if (captchaCode && captchaSessionCookie && (encryptedPwd || captchaPemKey)) {
               sessionCookie = captchaSessionCookie
               pemKey = captchaPemKey
+            } else if (encryptedPwd && (loginSessionCookie || captchaSessionCookie)) {
+              sessionCookie = loginSessionCookie || captchaSessionCookie
             } else {
               const loginPageResp = await fetch('https://my1.zjhzlib.cn/opac/reader/login', {
                 headers: { 'User-Agent': ua },
@@ -2378,7 +4106,9 @@ export function registerLibraryApiMiddlewares(server: {
               pemKey = await pemResp.text()
             }
 
-            const encryptedPwd = encryptHzlibPassword(password, pemKey)
+            if (!encryptedPwd) {
+              encryptedPwd = encryptHzlibPassword(password, pemKey)
+            }
 
             const formData = new URLSearchParams()
             formData.set('vToken', '')
@@ -2410,7 +4140,6 @@ export function registerLibraryApiMiddlewares(server: {
             if (newSessionMatch) {
               sessionCookie = newSessionMatch[0]
             }
-            lastHzlibSessionCookie = sessionCookie
 
             // If status is 200 and still on login page, extract error tip
             if (loginResp.status === 200) {
@@ -2510,14 +4239,11 @@ export function registerLibraryApiMiddlewares(server: {
             renewByBarcode
           )
           const allRecords = [...currentRecords, ...historyRecords]
-          latestHzlibSyncCache = {
-            records: allRecords,
-            syncedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
-          }
 
           res.end(
             JSON.stringify({
               ok: true,
+              sessionCookie,
               records: allRecords,
               summary: {
                 currentCount: currentRecords.length,
@@ -2526,8 +4252,14 @@ export function registerLibraryApiMiddlewares(server: {
             })
           )
         } catch (err: any) {
-          res.statusCode = 500
-          res.end(JSON.stringify({ ok: false, message: err?.message || '同步杭州图书馆出错' }))
+          res.statusCode = err?.statusCode || 500
+          res.end(
+            JSON.stringify({
+              ok: false,
+              reqId: req.__reqId,
+              message: formatUpstreamError(err, '同步杭州图书馆出错', req, '/api/hzlib/sync'),
+            })
+          )
         }
       })
 }

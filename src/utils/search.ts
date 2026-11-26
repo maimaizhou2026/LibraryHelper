@@ -760,3 +760,215 @@ export function getEffectiveRenewCount(rec: BorrowRecord): number {
 export function getMaxRenewLimit(rec: Pick<BorrowRecord, 'library'>): number {
   return rec.library === 'hzlib' ? 2 : 1
 }
+
+function upgradeCoverHttps(rawUrl: string): string {
+  const url = String(rawUrl || '').trim()
+  if (!url) return ''
+  return url.replace(
+    /^http:\/\/((?:[a-z0-9-]+\.)*(?:baidu\.com|bdimg\.com|bdstatic\.com|360buyimg\.com|ddimg\.cn|alicdn\.com|winxuancdn\.com|kfzimg\.com|myqcloud\.com|qq\.com|zhimg\.com|smzdm\.com|zdmimg\.com|bing\.net)\/)/i,
+    'https://$1'
+  )
+}
+
+function splitCoverHdFragment(rawUrl?: string): { baseUrl: string; hdUrl: string } {
+  const raw = String(rawUrl || '').trim()
+  if (!raw) return { baseUrl: '', hdUrl: '' }
+  const hashIdx = raw.indexOf('#hd=')
+  if (hashIdx < 0) {
+    return { baseUrl: upgradeCoverHttps(raw), hdUrl: '' }
+  }
+  const baseUrl = upgradeCoverHttps(raw.slice(0, hashIdx))
+  let hdUrl = ''
+  try {
+    hdUrl = upgradeCoverHttps(decodeURIComponent(raw.slice(hashIdx + 4)))
+  } catch {
+    hdUrl = ''
+  }
+  // 严守「同一封面源」原则：若 #hd= 是官方同源大图（京东/文轩/当当/dataesb大图），直接统一使用该官方源；若 #hd= 是跨源拼接的百度图则丢弃 #hd=，杜绝大小图不一致
+  if (hdUrl) {
+    if (/\.(?:360buyimg\.com|winxuancdn\.com|ddimg\.cn|bookuu\.com)\//i.test(hdUrl)) {
+      return { baseUrl: hdUrl, hdUrl: '' }
+    }
+    if (hdUrl.includes('book-resource.dataesb.com/cover/')) {
+      return { baseUrl: hdUrl, hdUrl: '' }
+    }
+    return { baseUrl, hdUrl: '' }
+  }
+  return { baseUrl, hdUrl }
+}
+
+/**
+ * 将图书封面 URL 转换为适合列表卡片展示的轻量小缩略图（WebP/降采样），节省流量与首屏加载时间
+ */
+export function toThumbnailCoverUrl(rawUrl?: string, width = 220, height = 300): string {
+  const { baseUrl: url } = splitCoverHdFragment(rawUrl)
+  if (!url) return ''
+  if (url.includes('.baidu.com/it/u=')) {
+    // 百度图片 CDN 的 ?w=&h= 不改变返回字节流，保持原生参数一致可使点击放大 100% 命中浏览器 Memory Cache (0ms)
+    let next = url
+    if (!/[?&]fmt=/i.test(next)) {
+      next += (next.includes('?') ? '&' : '?') + 'fmt=auto'
+    }
+    return next
+  }
+  if (url.includes('.360buyimg.com/')) {
+    // 统一使用 /n1/ (350x350 标准正方形缩略图)，与 /n0/ (800x800 原图) 保持严格 1:1 比例，兼容 jfs/ 与旧版数字路径
+    return url
+      .replace(/\/n\d+\/s\d+x\d+_jfs\//i, '/n1/jfs/')
+      .replace(/\/n[02-9]\d*\//i, '/n1/')
+  }
+  if (url.includes('.winxuancdn.com/')) {
+    return url.split('?')[0].replace(/_original_800x800\.jpe?g$/i, '_350x350.jpg')
+  }
+  if (url.includes('.alicdn.com/') && /\.(?:jpe?g|png)$/i.test(url) && !/_\d+x\d+\.\w+$/i.test(url)) {
+    return `${url}_240x240.jpg`
+  }
+  if (url.includes('.bdstatic.com/')) {
+    const base = url.split('?')[0]
+    return `${base}?x-bce-process=image/resize,m_lfit,w_${width}`
+  }
+  if ((url.includes('.zdmimg.com/') || url.includes('.smzdm.com/')) && /_e\d+\.jpg$/i.test(url)) {
+    return url.replace(/_e\d+\.jpg$/i, '_e320.jpg')
+  }
+  if (url.includes('.myqcloud.com/cover/') && url.includes('/t7_')) {
+    return url.replace('/t7_', '/t6_')
+  }
+  if (url.includes('.bing.net/th?id=')) {
+    const idMatch = url.match(/^(https?:\/\/[^?]+\?id=[^&]+)/i)
+    if (idMatch) {
+      return `${idMatch[1]}&w=${width}&h=${height}&c=7&qlt=80`
+    }
+  }
+  return url
+}
+
+/**
+ * 将图书封面 URL 转换为适合点击全屏放大预览的高清大图 URL
+ */
+export function toHighResCoverUrl(rawUrl?: string): string {
+  const { baseUrl, hdUrl } = splitCoverHdFragment(rawUrl)
+  const target = hdUrl || baseUrl
+  if (!target) return ''
+  if (target.includes('.360buyimg.com/')) {
+    return target
+      .replace(/\/n\d+\/s\d+x\d+_jfs\//i, '/n0/jfs/')
+      .replace(/\/n[1-9]\d*\//i, '/n0/')
+  }
+  if (target.includes('.winxuancdn.com/')) {
+    return target.split('?')[0].replace(/_350x350\.jpe?g$/i, '_original_800x800.jpg')
+  }
+  if (target.includes('.ddimg.cn/')) {
+    return target.replace(/_[blm]_(\d+\.jpe?g)/i, '_u_$1')
+  }
+  if (target.includes('.alicdn.com/')) {
+    return target.replace(/_\d+x\d+\.(jpe?g|png|webp)$/i, '')
+  }
+  if (target.includes('.bdstatic.com/')) {
+    const base = target.split('?')[0]
+    return `${base}?x-bce-process=image/resize,m_lfit,w_800`
+  }
+  if ((target.includes('.zdmimg.com/') || target.includes('.smzdm.com/')) && /_e\d+\.jpg$/i.test(target)) {
+    return target.replace(/_e\d+\.jpg$/i, '_e1080.jpg')
+  }
+  if (target.includes('.myqcloud.com/cover/') && target.includes('/t6_')) {
+    return target.replace('/t6_', '/t7_')
+  }
+  if (target.includes('.bing.net/th?id=')) {
+    const idMatch = target.match(/^(https?:\/\/[^?]+\?id=[^&]+)/i)
+    if (idMatch) {
+      return `${idMatch[1]}&w=800&h=1120&rs=1&qlt=95`
+    }
+  }
+  if (target.includes('.baidu.com/it/u=')) {
+    let next = target
+    if (!/[?&]fmt=/i.test(next)) {
+      next += (next.includes('?') ? '&' : '?') + 'fmt=auto'
+    }
+    return next
+  }
+  return target
+}
+
+/**
+ * 当高清原图 URL (#hd=...) 加载失败时，回退到基础封面 URL
+ */
+export function toFallbackCoverUrl(rawUrl?: string): string {
+  return toThumbnailCoverUrl(rawUrl)
+}
+
+const decodedHighResUrls = new Set<string>()
+const pendingHighResDecodeMap = new Map<string, Promise<boolean>>()
+
+/**
+ * 判断某个封面的高清大图是否已经在浏览器内存中完成下载与 GPU 位图解码
+ */
+export function isHighResCoverDecoded(rawUrl?: string): boolean {
+  if (!rawUrl) return false
+  const thumb = toThumbnailCoverUrl(rawUrl)
+  const hd = toHighResCoverUrl(rawUrl)
+  if (!hd || hd === thumb) return true
+  return decodedHighResUrls.has(hd)
+}
+
+/**
+ * 后台预加载高清大图并等待 Image.decode() 完成位图解码，确保切换或首帧渲染 0 闪烁
+ */
+export function preloadAndDecodeHighResCover(rawUrl?: string): Promise<boolean> {
+  if (typeof window === 'undefined' || !rawUrl) return Promise.resolve(false)
+  const thumb = toThumbnailCoverUrl(rawUrl)
+  const hd = toHighResCoverUrl(rawUrl)
+  if (!hd || hd === thumb || decodedHighResUrls.has(hd)) return Promise.resolve(true)
+  const existing = pendingHighResDecodeMap.get(hd)
+  if (existing) return existing
+
+  const task = new Promise<boolean>((resolve) => {
+    const img = new Image()
+    img.referrerPolicy = 'no-referrer'
+    img.onload = () => {
+      if (typeof img.decode === 'function') {
+        img
+          .decode()
+          .then(() => {
+            decodedHighResUrls.add(hd)
+            resolve(true)
+          })
+          .catch(() => {
+            decodedHighResUrls.add(hd)
+            resolve(true)
+          })
+      } else {
+        decodedHighResUrls.add(hd)
+        resolve(true)
+      }
+    }
+    img.onerror = () => {
+      pendingHighResDecodeMap.delete(hd)
+      resolve(false)
+    }
+    img.src = hd
+  })
+  pendingHighResDecodeMap.set(hd, task)
+  return task
+}
+
+/**
+ * 在鼠标悬停或手指触碰封面时提前预热加载并解码高清大图到浏览器内存缓存，使点击放大实现 0 延迟、0 闪烁
+ */
+export function prefetchHighResCover(rawUrl?: string): void {
+  void preloadAndDecodeHighResCover(rawUrl)
+}
+
+/**
+ * 安全解析后端 /api/* 响应 JSON，遇到非 JSON 错误页（如 502/504 网关超时）时保留 HTTP 状态码与追踪 ID
+ */
+export async function parseJsonSafe(resp: Response): Promise<any> {
+  const text = await resp.text()
+  const reqId = resp.headers?.get?.('x-request-id') || ''
+  try {
+    return text ? JSON.parse(text) : {}
+  } catch {
+    const preview = text.replace(/\s+/g, ' ').slice(0, 100)
+    const tag = reqId ? ` [#${reqId}]` : ''
+    throw new Error(`接口返回异常 (HTTP ${resp.status}${tag})：${preview || '非 JSON 响应'}`)
+  }
+}

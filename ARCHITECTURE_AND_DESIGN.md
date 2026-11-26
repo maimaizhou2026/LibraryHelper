@@ -66,3 +66,21 @@
 ### 3.8 双模式独立搜索状态与历史记录管理（`lh_search_history_local_v1` / `lh_search_history_online_v1`）
 - 「📚 搜我的借阅」与「🌐 在线搜浙图/杭图全馆书库」拥有各自独立的搜索框状态（`localSearchQuery` / `onlineSearchQuery`）与独立的最近 **10 条** 搜索历史记录，切换 Tab 使用 `v-show` 保留已加载列表与展开状态，互不干扰、不重复触发请求；
 - 点击或聚焦搜索框自动展开下拉历史面板，支持点击历史词一键回填并触发检索、单条删除及一键清空全部历史。
+
+### 3.9 同账号超期历史永久保留与本地备份账号核对机制（`src/services/db.ts` + `SyncImportModal.vue`）
+- **超期历史永久保留（永不丢失早期账本）**：
+  - 针对浙图/杭图服务器仅保留近期（如近 2 年）历史借阅的限制，`upsertRecords` 按记录 ID 增量合并并绑定读者账号 `account`；
+  - 同账号下的本地早期历史记录（不在服务器本次返回列表内的数据）**100% 永久保留在本地 IndexedDB**，并在本地曾为 `borrowed` 但服务器最新在借列表已无该条码时自动闭合为 `returned`；
+- **本地导入/导出与账号一致性校验**：
+  - 同步弹窗提供第 3 个 Tab **「💾 本地导入/导出」**，导出 JSON 备份时自动写入 `accounts: { hzlibAccount, zjlibAccount }` 与每条记录的 `account` 标识；
+  - 导入本地 JSON 备份时强制比对备份文件中的账号与当前本地绑定账号：若账号不一致则直接拒绝导入并提示冲突账号，防止不同读者的借阅数据混入。
+
+### 3.9 多用户无状态会话隔离与浏览器端密码前置加密（`src/utils/cryptoAuth.ts`）
+- **服务端零用户全局状态**：移除服务端进程级共享的杭图同步结果缓存与 `JSESSIONID` 会话变量，每个用户的浙图 `BFF-USER-TOKEN` 与杭图 `sessionCookie`（`lh_hzlib_cookie`）100% 由各自浏览器本地持有并按次随请求携带，彻底杜绝 Vercel Serverless 热实例在多用户并发使用时的串号与数据泄漏；
+- **密码加密前移至浏览器端**：浙江图书馆密码在浏览器本地通过 `encryptZjlibPasswordClient`（SM2 公钥加密）转为密文，杭州图书馆密码在浏览器本地通过 `/api/hzlib/captcha?mode=init` 预获取当次会话公钥后由 `encryptHzlibPasswordClient`（纯 `BigInt` 实现的标准 RSA PKCS#1 v1.5 公钥加密）转为密文，发往 `/api/*` 后端的网络请求仅传输 `encryptedPassword` 密文，且本地 `localStorage` 凭证通过 `encodeLocalSecret` 混淆存储，避免明文密码在网络请求与本地存储中裸露。
+- **公网部署与多用户高并发安全加固（`src/server/libraryProxy.ts`）**：
+  1. **API 安全响应头与防 CDN 误缓存**：所有 `/api/*` 统一注入 `Cache-Control: no-store, no-cache, must-revalidate, private`、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`，防止 CDN 或反向代理缓存 `JSESSIONID` 或二维码状态；
+  2. **跨站请求防护（CSRF）与请求体大小上限**：对 `POST /api/*` 校验 `Sec-Fetch-Site` 与 `Origin/Host` 同源性（拦截跨站 `403`），并对 `readJsonBody` 实施 **256 KB** 硬上限（超限返回 `413`）；
+  3. **基于客户端 IP 的滑动窗口限流**：认证/同步/续借/验证码类接口限制单 IP **25 次/分钟**，检索/馆藏/封面类接口限制单 IP **80 次/分钟**（超限返回 `429`）；
+  4. **封面缓存并发原子写与 SSRF 防护**：`coverMemoryCache` 采用无原型对象（防原型链污染）并限制最大 **3000 条** 容量，写入 `.cover-cache.json` 采用异步串行锁 + `.tmp` 原子替换；上游 TLS 证书仅对特定旧系统域名放宽，并对封面 URL 实施公网 `http(s)` 与内网 IP 黑名单过滤；
+  5. **零敏感信息脱敏诊断日志与 `/api/health?probe=1` 上游连通探测**：每个请求生成 `reqId`（`X-Request-Id`），异常经 `sanitizeDiagnosticText` 严格剥离任何凭证/证号/Token/长串字符后写入最近 30 条内存环形缓冲区与 `console.error`，支持通过 `/api/health?probe=1` 实时探测浙图/杭图双域名延迟与查看最近脱敏错误列表；公开无状态检索/馆藏查询启用 **45 秒** 微缓存。

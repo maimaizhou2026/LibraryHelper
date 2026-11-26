@@ -12,7 +12,7 @@ import {
   BookOpen,
 } from 'lucide-vue-next'
 import type { BorrowRecord } from '../types/library'
-import { checkBookDuplicate } from '../utils/search'
+import { checkBookDuplicate, prefetchHighResCover, toThumbnailCoverUrl } from '../utils/search'
 
 const props = defineProps<{
   open: boolean
@@ -23,6 +23,17 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'select-record', record: BorrowRecord): void
+  (
+    e: 'zoom-cover',
+    payload: {
+      id?: string
+      title: string
+      coverUrl: string
+      author?: string
+      publisher?: string
+      isbn?: string
+    }
+  ): void
 }>()
 
 const inputQuery = ref('')
@@ -206,6 +217,8 @@ onBeforeUnmount(() => {
               <img
                 src="/isbn-sample-photo.jpg"
                 alt="ISBN条形码示例"
+                loading="lazy"
+                decoding="async"
                 class="max-h-44 w-auto object-contain rounded-lg"
               />
             </div>
@@ -241,12 +254,29 @@ onBeforeUnmount(() => {
               <!-- Cover Thumbnail -->
               <div
                 class="w-14 h-20 rounded-lg overflow-hidden shrink-0 border border-slate-200 bg-gradient-to-br from-teal-700 to-slate-800 flex items-center justify-center text-white text-center"
+                :class="group.coverUrl && !brokenCovers.has(group.normKey) ? 'cursor-zoom-in' : ''"
+                :title="group.coverUrl && !brokenCovers.has(group.normKey) ? '点击放大查看高清封面' : undefined"
+                @mouseenter="group.coverUrl && !brokenCovers.has(group.normKey) && prefetchHighResCover(group.coverUrl)"
+                @touchstart.passive="group.coverUrl && !brokenCovers.has(group.normKey) && prefetchHighResCover(group.coverUrl)"
+                @click.stop="
+                  group.coverUrl &&
+                  !brokenCovers.has(group.normKey) &&
+                  emit('zoom-cover', {
+                    id: group.records[0]?.id,
+                    title: group.title,
+                    coverUrl: group.coverUrl,
+                    author: group.author,
+                    publisher: group.records[0]?.publisher,
+                    isbn: group.isbn,
+                  })
+                "
               >
                 <img
                   v-if="group.coverUrl && !brokenCovers.has(group.normKey)"
-                  :src="group.coverUrl"
+                  :src="toThumbnailCoverUrl(group.coverUrl, 140, 200)"
                   :alt="group.title"
                   loading="lazy"
+                  decoding="async"
                   referrerpolicy="no-referrer"
                   class="w-full h-full object-cover"
                   @error="brokenCovers.add(group.normKey)"
