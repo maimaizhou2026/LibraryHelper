@@ -48678,9 +48678,9 @@ var import_sm_crypto = __toESM(require_src(), 1);
 
 // version.json
 var version_default = {
-  version: "1.0.6",
+  version: "1.0.9",
   updatedAt: "2026-11-26",
-  description: "\u672C\u5730\u641C\u7D22\u65B0\u589E 1 \u79D2\u505C\u987F\u9632\u6296\u89E6\u53D1\u4E0E\u5C01\u9762\u300C\u5148\u5FEB\u540E\u5927\uFF08\u524D4+\u540E12\uFF09\u300D\u62A2\u5360\u5F0F\u5206\u6279\u52A0\u8F7D\uFF0C\u5728\u7EBF\u641C\u7D22\u6539\u4E3A\u6309\u56DE\u8F66\u6216\u70B9\u51FB\u6309\u94AE\u624B\u52A8\u89E6\u53D1"
+  description: "\u4E25\u683C\u9650\u5236\u5728\u7EBF\u68C0\u7D22\u4EC5\u5728\u70B9\u51FB\u300C\u5728\u7EBF\u641C\u7D22\u300D\u6216\u70B9\u51FB\u300C\u52A0\u8F7D\u66F4\u591A\u4E66\u76EE\u300D\u6309\u94AE\u65F6\u53D1\u8D77\u7F51\u7EDC\u8BF7\u6C42\uFF0C\u79FB\u9664\u5728\u7EBF\u5217\u8868\u6EDA\u52A8\u89E6\u5E95\u81EA\u52A8\u7FFB\u9875"
 };
 
 // addr/zjlib_branches.json
@@ -51195,7 +51195,8 @@ function registerLibraryApiMiddlewares(rawServer) {
           });
         }
       }
-      const missingIsbnItems = (forceInternet ? [] : unresolved).filter(
+      const skipDirectLibraryCoverTiers = forceInternet || Boolean(process.env.VERCEL || process.env.VERCEL_REGION);
+      const missingIsbnItems = (skipDirectLibraryCoverTiers ? [] : unresolved).filter(
         (u) => (!u.cleanIsbn || Boolean(u.meta.volNumber)) && Boolean(u.title)
       );
       if (missingIsbnItems.length > 0) {
@@ -51301,7 +51302,7 @@ function registerLibraryApiMiddlewares(rawServer) {
       }
       const isbnsToQuery = [
         ...new Set(
-          (forceInternet ? [] : unresolved).flatMap((u) => u.candidateIsbns).filter((s) => s.length >= 10)
+          (skipDirectLibraryCoverTiers ? [] : unresolved).flatMap((u) => u.candidateIsbns).filter((s) => s.length >= 10)
         )
       ];
       const isbnCoverMap = {};

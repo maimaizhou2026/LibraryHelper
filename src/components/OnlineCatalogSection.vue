@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import {
   Loader2,
   BookOpen,
@@ -25,7 +25,7 @@ import {
   matchesSelectedBranchOption,
   openLibraryLocationInMap,
 } from '../utils/mapLink'
-import { apiFetch } from '../services/cnCatalogClient'
+import { apiFetch, translateHoldingsZhijiangShelves } from '../services/cnCatalogClient'
 
 interface HoldingPanelState {
   expanded: boolean
@@ -71,8 +71,6 @@ const emit = defineEmits<{
 }>()
 
 const holdingPanels = reactive<Record<string, HoldingPanelState>>({})
-const loadMoreSentinel = ref<HTMLElement | null>(null)
-let sentinelObserver: IntersectionObserver | null = null
 
 watch(
   () => [props.loading, props.branch] as const,
@@ -84,41 +82,6 @@ watch(
     }
   }
 )
-
-onMounted(() => {
-  if (typeof IntersectionObserver !== 'undefined') {
-    sentinelObserver = new IntersectionObserver(
-      (entries) => {
-        if (
-          entries[0]?.isIntersecting &&
-          props.hasMore &&
-          !props.loading &&
-          !props.loadingMore
-        ) {
-          emit('load-more')
-        }
-      },
-      { rootMargin: '160px' }
-    )
-    if (loadMoreSentinel.value) {
-      sentinelObserver.observe(loadMoreSentinel.value)
-    }
-  }
-})
-
-watch(loadMoreSentinel, (el, oldEl) => {
-  if (sentinelObserver) {
-    if (oldEl) sentinelObserver.unobserve(oldEl)
-    if (el) sentinelObserver.observe(el)
-  }
-})
-
-onBeforeUnmount(() => {
-  if (sentinelObserver) {
-    sentinelObserver.disconnect()
-    sentinelObserver = null
-  }
-})
 
 function matchesSelectedBranch(h: CatalogHoldingItem, branch: string): boolean {
   return matchesSelectedBranchOption(h.libName || '', h.location || '', branch)
@@ -278,6 +241,11 @@ async function toggleHoldingExpand(book: BorrowRecord) {
   }
 
   panel.expanded = true
+  if (book.library === 'zjlib' && panel.holdings.some((h) => Boolean(h.rawShelfMark))) {
+    void translateHoldingsZhijiangShelves(panel.holdings).then(() => {
+      panel.holdings = [...panel.holdings]
+    })
+  }
   if (panel.loaded || panel.loading) return
 
   await fetchDetailHoldings(book, panel)
@@ -697,8 +665,8 @@ function getBorrowStatusBadge(book: BorrowRecord) {
         </div>
       </div>
 
-      <!-- 滚动触底自动加载下一页 / 手动加载更多 -->
-      <div ref="loadMoreSentinel" class="pt-1 pb-3 text-center">
+      <!-- 手动点击加载下一页（禁止滚动触底自动发起在线请求，节省函数调用） -->
+      <div class="pt-1 pb-3 text-center">
         <div
           v-if="loadingMore"
           class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-slate-200 text-xs text-slate-600 shadow-2xs"

@@ -404,9 +404,6 @@ function handleOnlineBranchChange() {
   } catch {
     // ignore
   }
-  if (onlineSearched.value && onlineSearchQuery.value.trim()) {
-    void runOnlineCatalogSearch()
-  }
 }
 
 function toggleOnlineOnlyAvailable() {
@@ -415,9 +412,6 @@ function toggleOnlineOnlyAvailable() {
     sessionStorage.setItem(ONLINE_AVAIL_SESSION_KEY, onlineOnlyAvailable.value ? '1' : '0')
   } catch {
     // ignore
-  }
-  if (onlineSearched.value && onlineSearchQuery.value.trim()) {
-    void runOnlineCatalogSearch()
   }
 }
 
@@ -428,8 +422,11 @@ function toggleOnlineAutoGroup() {
   } catch {
     // ignore
   }
-  if (onlineSearched.value && onlineSearchQuery.value.trim()) {
-    void runOnlineCatalogSearch()
+  // 纯本地内存重排已加载的在线结果，不发起任何网络请求
+  if (onlineItems.value.length > 0) {
+    onlineItems.value = onlineAutoGroup.value
+      ? sortOnlineCatalogItems(onlineItems.value, onlineSearchQuery.value.trim())
+      : [...onlineItems.value].sort((a, b) => (a.rawOrder ?? 0) - (b.rawOrder ?? 0))
   }
 }
 

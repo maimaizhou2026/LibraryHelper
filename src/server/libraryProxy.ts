@@ -2131,7 +2131,9 @@ export function registerLibraryApiMiddlewares(rawServer: {
           }
 
           // Step 0: 针对无 ISBN 的借阅记录，或带分卷号但原 ISBN 为多册合订套书 ISBN（如《航海王．幽灵岛．卷五十一》共用套书 ISBN）的记录，通过浙图公开目录检索补全单册精准 ISBN
-          const missingIsbnItems = (forceInternet ? [] : unresolved).filter(
+          const skipDirectLibraryCoverTiers =
+            forceInternet || Boolean(process.env.VERCEL || process.env.VERCEL_REGION)
+          const missingIsbnItems = (skipDirectLibraryCoverTiers ? [] : unresolved).filter(
             (u) => (!u.cleanIsbn || Boolean(u.meta.volNumber)) && Boolean(u.title)
           )
           if (missingIsbnItems.length > 0) {
@@ -2265,7 +2267,7 @@ export function registerLibraryApiMiddlewares(rawServer: {
           // Tier 1: 图创/杭图官方封面中心 (book-resource.dataesb.com)
           const isbnsToQuery = [
             ...new Set(
-              (forceInternet ? [] : unresolved)
+              (skipDirectLibraryCoverTiers ? [] : unresolved)
                 .flatMap((u) => u.candidateIsbns)
                 .filter((s) => s.length >= 10)
             ),

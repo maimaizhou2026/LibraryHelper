@@ -66,6 +66,18 @@ export interface RelayUpstreamResponse {
   bytes: () => Uint8Array
 }
 
+export async function cnRelayPipeline(payload: Record<string, any>): Promise<any> {
+  const relayUrl = getCnRelayUrl()
+  const resp = await window.fetch(relayUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/plain;charset=UTF-8',
+    },
+    body: JSON.stringify(payload),
+  })
+  return resp.json()
+}
+
 export async function cnRelayFetch(
   targetUrl: string,
   init?: {
@@ -174,6 +186,19 @@ const HZLIB_CAPTCHA_FIELDS = [
 export async function handleHzlibCaptchaDirect(urlStr: string): Promise<any> {
   const u = new URL(urlStr, 'http://localhost')
   const includeImage = u.searchParams.get('mode') !== 'init'
+  try {
+    const pipe = await cnRelayPipeline({ mode: 'hzlib_init', includeImage })
+    if (pipe?.ok && pipe.pipeline && pipe.sessionCookie && pipe.pemKey) {
+      return {
+        ok: true,
+        sessionCookie: pipe.sessionCookie,
+        pemKey: pipe.pemKey,
+        captchaImage: pipe.captchaImage || '',
+      }
+    }
+  } catch {
+    // fallback if relay worker not yet upgraded
+  }
   const loginRes = await cnRelayFetch('https://my1.zjhzlib.cn/opac/reader/login')
   const jsessionMatch = loginRes.setCookies.join('; ').match(/JSESSIONID=[^;]+/)
   const sessionCookie = jsessionMatch ? jsessionMatch[0] : ''

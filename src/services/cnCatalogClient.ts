@@ -10,6 +10,7 @@ import {
 } from '../utils/mapLink'
 import {
   cnRelayFetch,
+  cnRelayPipeline,
   handleHzlibCaptchaDirect,
   handleHzlibSyncDirect,
   handleLoanRenewDirect,
@@ -25,7 +26,7 @@ const COVER_LOCAL_CACHE_KEY = 'lh_client_cover_cache_v1'
 
 const clientQueryCache = new Map<string, { expiresAt: number; data: any }>()
 const clientCoverCache = new Map<string, string>()
-const checkedNoOfficialIsbns = new Set<string>()
+const zhijiangShelfDescCache = new Map<string, string>()
 let localCoverCacheLoaded = false
 
 function ensureLocalCoverCacheLoaded(): void {
@@ -38,11 +39,6 @@ function ensureLocalCoverCacheLoaded(): void {
     if (parsed?.covers && typeof parsed.covers === 'object') {
       for (const [k, v] of Object.entries(parsed.covers)) {
         if (typeof v === 'string' && v) clientCoverCache.set(k, v)
-      }
-    }
-    if (Array.isArray(parsed?.noOfficialIsbns)) {
-      for (const isbn of parsed.noOfficialIsbns) {
-        if (typeof isbn === 'string' && isbn) checkedNoOfficialIsbns.add(isbn)
       }
     }
   } catch {
@@ -63,13 +59,7 @@ function persistLocalCoverCache(): void {
     for (const [k, v] of clientCoverCache.entries()) {
       coversObj[k] = v
     }
-    localStorage.setItem(
-      COVER_LOCAL_CACHE_KEY,
-      JSON.stringify({
-        covers: coversObj,
-        noOfficialIsbns: Array.from(checkedNoOfficialIsbns).slice(-500),
-      })
-    )
+    localStorage.setItem(COVER_LOCAL_CACHE_KEY, JSON.stringify({ covers: coversObj }))
   } catch {
     // ignore quota error
   }
@@ -198,7 +188,15 @@ function extractZhijiangShelfPrefixes(copies: any[]): string[] {
 
 async function fetchZhijiangShelfDescMap(shelfPrefixes: string[]): Promise<Record<string, string>> {
   const shelfDescMap: Record<string, string> = {}
-  if (shelfPrefixes.length === 0) return shelfDescMap
+  const uncached: string[] = []
+  for (const p of shelfPrefixes) {
+    if (zhijiangShelfDescCache.has(p)) {
+      shelfDescMap[p] = zhijiangShelfDescCache.get(p)!
+    } else {
+      uncached.push(p)
+    }
+  }
+  if (uncached.length === 0) return shelfDescMap
   try {
     const descResp = (
       await cnRelayFetch(
@@ -206,15 +204,57 @@ async function fetchZhijiangShelfDescMap(shelfPrefixes: string[]): Promise<Recor
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'BFF-ORG-ID': ZJLIB_ORG_ID },
-          body: JSON.stringify({ orgId: ZJLIB_ORG_ID, shelfNoList: shelfPrefixes }),
+          body: JSON.stringify({ orgId: ZJLIB_ORG_ID, shelfNoList: uncached }),
         }
       )
     ).json()
-    if (descResp?.code === 200 && descResp.data) Object.assign(shelfDescMap, descResp.data)
+    if (descResp?.code === 200 && descResp.data) {
+      for (const [k, v] of Object.entries(descResp.data)) {
+        if (typeof v === 'string' && v) {
+          zhijiangShelfDescCache.set(k, v)
+          shelfDescMap[k] = v
+        }
+      }
+    }
   } catch {
     // ignore
   }
   return shelfDescMap
+}
+
+/**
+ * 按需翻译之江馆层架标：仅在用户点击展开某本浙图书的馆藏列表时触发
+ */
+export async function translateHoldingsZhijiangShelves(holdings: any[]): Promise<void> {
+  if (!Array.isArray(holdings) || holdings.length === 0) return
+  const prefixes = [
+    ...new Set(
+      holdings
+        .filter((h) => Boolean(h.rawShelfMark))
+        .map((h) => {
+          let p = String(h.rawShelfMark || '').trim()
+          while ((p.match(/-/g) || []).length > 6) {
+            p = p.slice(0, p.lastIndexOf('-'))
+          }
+          return p
+        })
+    ),
+  ]
+  if (prefixes.length === 0) return
+  const descMap = await fetchZhijiangShelfDescMap(prefixes)
+  for (const h of holdings) {
+    const raw = String(h.rawShelfMark || '').trim()
+    if (!raw) continue
+    let p = raw
+    while ((p.match(/-/g) || []).length > 6) {
+      p = p.slice(0, p.lastIndexOf('-'))
+    }
+    const baseDesc = descMap[p]
+    if (baseDesc) {
+      const posNum = parseInt(raw.split('-').pop() || '0', 10)
+      h.shelfNo = posNum > 0 ? `${baseDesc}第${posNum}位` : baseDesc
+    }
+  }
 }
 
 function formatZjlibCopiesWithDescMap(
@@ -250,6 +290,8 @@ function formatZjlibCopiesWithDescMap(
         if (baseDesc) {
           const posNum = parseInt(rawShelfMark.split('-').pop() || '0', 10)
           shelfText = posNum > 0 ? `${baseDesc}第${posNum}位` : baseDesc
+        } else {
+          shelfText = effectiveCallNo || rawShelfMark
         }
       } else if (rName.includes('立库') || rName.includes('保存本')) {
         shelfText = '闭架智能立库：到服务台/检索机凭条码申请机器调阅（馆内阅读）'
@@ -349,32 +391,68 @@ export async function handleCatalogSearchDirect(body: any): Promise<any> {
     return 500
   }
 
+  const cleanKw = searchKw.replace(/[．·：:，,（）()《》“”"']/g, ' ').replace(/\s+/g, ' ').trim()
+  const curlibParam =
+    hzTargetBranch && /^\d{4}$/.test(hzTargetBranch) && !['1900', '0900', '1800'].includes(hzTargetBranch)
+      ? `&curlibcode=${encodeURIComponent(hzTargetBranch)}`
+      : ''
+  const hzSearchRows = Math.max(searchRows, 20)
+  const zjCandidateLimit = targetVolNum ? 24 : 12
+
+  // 按「关键词 + 页码 + 杭图底层分馆参数」缓存原始流水线数据：切换「只看有书 / 自动归类 / 浙图各馆区 / 杭图主题馆」时 0 阿里云调用
+  const rawPipeCacheKey = `pipe::${searchKw.toLowerCase()}::${page}::${zjCandidateLimit}::${curlibParam}`
+  let pipelineData: any = getClientCache(rawPipeCacheKey)
+  if (
+    pipelineData &&
+    ((needZj && !pipelineData.zjFetched) || (needHz && !pipelineData.hzFetched))
+  ) {
+    pipelineData = null
+  }
+
+  if (!pipelineData) {
+    try {
+      const pRes = await cnRelayPipeline({
+        mode: 'search_pipeline',
+        needZj,
+        needHz,
+        searchKw,
+        cleanKw: cleanKw || searchKw,
+        page,
+        searchRows,
+        hzSearchRows,
+        curlibParam,
+        zjCandidateLimit,
+      })
+      if (pRes?.ok && pRes.pipeline) {
+        pipelineData = {
+          ...pRes,
+          zjFetched: needZj,
+          hzFetched: needHz,
+        }
+        setClientCache(rawPipeCacheKey, pipelineData)
+      }
+    } catch {
+      // fallback to multi-call if relay worker not yet upgraded
+    }
+  }
+
   const zjPromise = needZj
     ? (async () => {
         try {
-          const zjHeaders = { 'Content-Type': 'application/json', 'BFF-ORG-ID': ZJLIB_ORG_ID }
-          // 优先请求书名检索，仅当书名命中不足 6 条时才补充全字段检索，节省 50% 检索请求
-          const zjTitleResp = await cnRelayFetch(
-            `${ZJLIB_API_BASE}/search-admin-service/open-api/search/pageList`,
-            {
-              method: 'POST',
-              headers: zjHeaders,
-              body: JSON.stringify({
-                metadataType: 'work',
-                current: page,
-                size: searchRows,
-                query: [{ id: 0, key: 'title', value: searchKw, match: 'phrase_fuzzy', condition: 'and' }],
-                sortBy: [],
-              }),
-            }
-          )
-            .then((r) => r.json())
-            .catch(() => null)
+          let mergedRaw: any[] = []
+          let total = 0
+          const copiesByWorkId = new Map<string, any[]>()
 
-          const titleRecords: any[] = zjTitleResp?.data?.records || []
-          let zjFullResp: any = null
-          if (titleRecords.length < 6) {
-            zjFullResp = await cnRelayFetch(
+          if (pipelineData?.zj) {
+            mergedRaw = pipelineData.zj.records || []
+            total = Number(pipelineData.zj.total || mergedRaw.length)
+            const mapObj = pipelineData.zj.copiesByWorkId || {}
+            for (const [wid, list] of Object.entries(mapObj)) {
+              copiesByWorkId.set(wid, Array.isArray(list) ? list : [])
+            }
+          } else {
+            const zjHeaders = { 'Content-Type': 'application/json', 'BFF-ORG-ID': ZJLIB_ORG_ID }
+            const zjTitleResp = await cnRelayFetch(
               `${ZJLIB_API_BASE}/search-admin-service/open-api/search/pageList`,
               {
                 method: 'POST',
@@ -382,29 +460,44 @@ export async function handleCatalogSearchDirect(body: any): Promise<any> {
                 body: JSON.stringify({
                   metadataType: 'work',
                   current: page,
-                  size: Math.min(searchRows, 15),
-                  query: [{ id: 0, key: '', value: searchKw, match: 'phrase_fuzzy', condition: 'and' }],
+                  size: searchRows,
+                  query: [{ id: 0, key: 'title', value: searchKw, match: 'phrase_fuzzy', condition: 'and' }],
                   sortBy: [],
                 }),
               }
             )
               .then((r) => r.json())
               .catch(() => null)
+            const titleRecords: any[] = zjTitleResp?.data?.records || []
+            let zjFullResp: any = null
+            if (titleRecords.length < 6) {
+              zjFullResp = await cnRelayFetch(
+                `${ZJLIB_API_BASE}/search-admin-service/open-api/search/pageList`,
+                {
+                  method: 'POST',
+                  headers: zjHeaders,
+                  body: JSON.stringify({
+                    metadataType: 'work',
+                    current: page,
+                    size: Math.min(searchRows, 15),
+                    query: [{ id: 0, key: '', value: searchKw, match: 'phrase_fuzzy', condition: 'and' }],
+                    sortBy: [],
+                  }),
+                }
+              )
+                .then((r) => r.json())
+                .catch(() => null)
+            }
+            const seenBibIds = new Set<string>()
+            for (const r of [...titleRecords, ...(zjFullResp?.data?.records || [])]) {
+              const bibId = String(Array.isArray(r.originalId) ? r.originalId[0] : r.originalId || r.id || '').trim()
+              if (!bibId || seenBibIds.has(bibId)) continue
+              seenBibIds.add(bibId)
+              mergedRaw.push(r)
+            }
+            total = Number(zjTitleResp?.data?.total || zjFullResp?.data?.total || mergedRaw.length)
           }
 
-          const mergedRaw: any[] = []
-          const seenBibIds = new Set<string>()
-          for (const r of [
-            ...titleRecords,
-            ...(zjFullResp?.data?.records || []),
-          ]) {
-            const bibId = String(Array.isArray(r.originalId) ? r.originalId[0] : r.originalId || r.id || '').trim()
-            if (!bibId || seenBibIds.has(bibId)) continue
-            seenBibIds.add(bibId)
-            mergedRaw.push(r)
-          }
-
-          const total = Number(zjTitleResp?.data?.total || zjFullResp?.data?.total || mergedRaw.length)
           const rawCandidates = mergedRaw
             .map((r: any, idx: number) => {
               const bibId = String(Array.isArray(r.originalId) ? r.originalId[0] : r.originalId || r.id || '').trim()
@@ -442,54 +535,48 @@ export async function handleCatalogSearchDirect(body: any): Promise<any> {
               if (a._rel !== b._rel) return a._rel - b._rel
               return toNaturalTitleKey(a.title).localeCompare(toNaturalTitleKey(b.title), 'zh-CN')
             })
-            .slice(0, targetVolNum ? 24 : 12)
+            .slice(0, zjCandidateLimit)
 
-          // 第一步：分批获取各候选书目的复本列表 (resourceList)，收集全部之江馆层架标前缀
-          const copiesByWorkId = new Map<string, any[]>()
-          const allShelfPrefixes = new Set<string>()
-          const concurrency = 6
-          for (let i = 0; i < rawCandidates.length; i += concurrency) {
-            const chunk = rawCandidates.slice(i, i + concurrency)
-            await Promise.all(
-              chunk.map(async (item) => {
-                try {
-                  const resListResp = (
-                    await cnRelayFetch(
-                      `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/resourceList`,
-                      {
-                        method: 'POST',
-                        headers: zjHeaders,
-                        body: JSON.stringify({ id: item.workId, sourceType: item.sourceType }),
-                      }
-                    )
-                  ).json()
-                  const allCopies: any[] = resListResp?.data?.[0] || []
-                  const scopedCopies = zjTargetDistrict
-                    ? allCopies.filter((c: any) => String(c.districtId || '') === zjTargetDistrict)
-                    : allCopies
-                  copiesByWorkId.set(item.workId, scopedCopies)
-                  for (const p of extractZhijiangShelfPrefixes(scopedCopies)) {
-                    allShelfPrefixes.add(p)
+          if (!pipelineData?.zj) {
+            const zjHeaders = { 'Content-Type': 'application/json', 'BFF-ORG-ID': ZJLIB_ORG_ID }
+            const concurrency = 6
+            for (let i = 0; i < rawCandidates.length; i += concurrency) {
+              const chunk = rawCandidates.slice(i, i + concurrency)
+              await Promise.all(
+                chunk.map(async (item) => {
+                  try {
+                    const resListResp = (
+                      await cnRelayFetch(
+                        `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/resourceList`,
+                        {
+                          method: 'POST',
+                          headers: zjHeaders,
+                          body: JSON.stringify({ id: item.workId, sourceType: item.sourceType }),
+                        }
+                      )
+                    ).json()
+                    copiesByWorkId.set(item.workId, resListResp?.data?.[0] || [])
+                  } catch {
+                    copiesByWorkId.set(item.workId, [])
                   }
-                } catch {
-                  copiesByWorkId.set(item.workId, [])
-                }
-              })
-            )
+                })
+              )
+            }
           }
 
-          // 第二步：全页所有候选书合并为 1 次 get/shelf/description/map 请求（减少最多 11 次阿里云调用）
-          const sharedShelfDescMap = await fetchZhijiangShelfDescMap([...allShelfPrefixes])
-
+          // 搜索列表阶段不再预调 get/shelf/description/map（改为用户点击展开该书馆藏时按需翻译，省 1 次调用）
           for (const item of rawCandidates) {
-            const scopedCopies = copiesByWorkId.get(item.workId) || []
+            const rawCopies = copiesByWorkId.get(item.workId) || []
+            const scopedCopies = zjTargetDistrict
+              ? rawCopies.filter((c: any) => String(c.districtId || '') === zjTargetDistrict)
+              : rawCopies
             item.totalHoldings = scopedCopies.length
             item.availableCount = scopedCopies.filter((c: any) => c.state === 2 || c.state === 16).length
             const firstCallNo = scopedCopies.find((c: any) => c.callno)?.callno || ''
             if (firstCallNo) item.callNo = String(firstCallNo).trim()
             const formattedHoldings = formatZjlibCopiesWithDescMap(
               scopedCopies,
-              sharedShelfDescMap,
+              {},
               item.title,
               item.callNo,
               item.author,
@@ -525,17 +612,22 @@ export async function handleCatalogSearchDirect(body: any): Promise<any> {
   const hzPromise = needHz
     ? (async () => {
         try {
-          const cleanKw = searchKw.replace(/[．·：:，,（）()《》“”"']/g, ' ').replace(/\s+/g, ' ').trim()
-          const curlibParam =
-            hzTargetBranch && /^\d{4}$/.test(hzTargetBranch) && !['1900', '0900', '1800'].includes(hzTargetBranch)
-              ? `&curlibcode=${encodeURIComponent(hzTargetBranch)}`
-              : ''
-          const hzSearchRows = Math.max(searchRows, 20)
-          const html = (
-            await cnRelayFetch(
-              `https://my1.zjhzlib.cn/opac/search?q=${encodeURIComponent(cleanKw || searchKw)}&searchWay=&scWay=dim&rows=${hzSearchRows}&page=${page}&sortWay=score&sortOrder=desc&hasholding=1${curlibParam}`
-            )
-          ).text()
+          let html = ''
+          let previewsMap: Record<string, any[]> = {}
+          let pipelineTotal = 0
+
+          if (pipelineData?.hz) {
+            html = String(pipelineData.hz.html || '')
+            previewsMap = pipelineData.hz.previews || {}
+            pipelineTotal = Number(pipelineData.hz.total || 0)
+          } else {
+            html = (
+              await cnRelayFetch(
+                `https://my1.zjhzlib.cn/opac/search?q=${encodeURIComponent(cleanKw || searchKw)}&searchWay=&scWay=dim&rows=${hzSearchRows}&page=${page}&sortWay=score&sortOrder=desc&hasholding=1${curlibParam}`
+              )
+            ).text()
+          }
+
           const doc = new DOMParser().parseFromString(html, 'text/html')
           const totalMatch = html.match(
             /检索到\s*<strong[^>]*>\s*([\d,]+)\s*<\/strong>|检索到\s*[:：]?\s*([\d,]+)\s*条|共\s*([\d,]+)\s*条/
@@ -581,13 +673,15 @@ export async function handleCatalogSearchDirect(body: any): Promise<any> {
 
           if (rawItems.length > 0) {
             try {
-              const recnos = rawItems.map((x) => x.bibId).join(',')
-              const prevRes = (
-                await cnRelayFetch(
-                  `https://my1.zjhzlib.cn/opac/book/holdingPreviews?bookrecnos=${encodeURIComponent(recnos)}&curLibcodes=&return_fmt=json`
-                )
-              ).json()
-              const previewsMap: Record<string, any[]> = prevRes?.previews || {}
+              if (!pipelineData?.hz) {
+                const recnos = rawItems.map((x) => x.bibId).join(',')
+                const prevRes = (
+                  await cnRelayFetch(
+                    `https://my1.zjhzlib.cn/opac/book/holdingPreviews?bookrecnos=${encodeURIComponent(recnos)}&curLibcodes=&return_fmt=json`
+                  )
+                ).json()
+                previewsMap = prevRes?.previews || {}
+              }
               const matchHzBranch = (p: any): boolean => {
                 if (!hzTargetBranch) return true
                 const curlib = String(p.curlib || '')
@@ -678,7 +772,7 @@ export async function handleCatalogSearchDirect(body: any): Promise<any> {
             ? (totalMatch[1] || totalMatch[2] || totalMatch[3] || '').replace(/,/g, '')
             : ''
           return {
-            total: rawTotalStr ? Number(rawTotalStr) : rawItems.length,
+            total: pipelineTotal || (rawTotalStr ? Number(rawTotalStr) : rawItems.length),
             items,
             rawCount: rawItems.length,
             pageSize: hzSearchRows,
@@ -894,59 +988,14 @@ export async function handleCoversResolveDirect(body: any): Promise<any> {
     }
   }
 
-  // Tier 1: 通过杭州阿里云中转查询图创官方封面中心 (跳过已确认无官方封面的 ISBN，避免重复请求)
-  if (!forceInternet && unresolved.length > 0) {
-    const isbns = [
-      ...new Set(
-        unresolved
-          .map((u) => String(u.isbn || '').replace(/[^0-9Xx]/g, '').toUpperCase())
-          .filter((s) => s.length >= 10 && !checkedNoOfficialIsbns.has(s))
-      ),
-    ]
-    if (isbns.length > 0) {
-      try {
-        const url = `https://book-resource.dataesb.com/websearch/metares?glc=P1ZJ0571001&cmdACT=getImages&type=0&isbns=${isbns.join(',')}&callback=cb`
-        const txt = (await cnRelayFetch(url, { timeoutMs: 5000 })).text()
-        const jsonStr = txt.trim().replace(/^cb\(/, '').replace(/\);?\s*$/, '')
-        const parsed = JSON.parse(jsonStr)
-        const byIsbn: Record<string, string> = {}
-        for (const entry of parsed?.result || []) {
-          const rawLink = String(entry?.resourceLink || entry?.coverlink || '').trim()
-          if (!rawLink || /bigbg\.png|default_book|no_pic|nopic|zanwu/i.test(rawLink)) continue
-          const httpsLink = rawLink.replace(/^\/\//, 'https://').replace(/^http:\/\//i, 'https://')
-          const isbnKey = String(entry.isbn || '').toUpperCase()
-          if (isbnKey && (!byIsbn[isbnKey] || httpsLink.includes('/cover/medium/'))) {
-            byIsbn[isbnKey] = httpsLink
-          }
-        }
-        for (const qIsbn of isbns) {
-          if (!byIsbn[qIsbn]) {
-            checkedNoOfficialIsbns.add(qIsbn)
-            cacheUpdated = true
-          }
-        }
-        for (const u of unresolved) {
-          const cleanIsbn = String(u.isbn || '').replace(/[^0-9Xx]/g, '').toUpperCase()
-          if (cleanIsbn && byIsbn[cleanIsbn]) {
-            resolvedById[u.id] = byIsbn[cleanIsbn]
-            clientCoverCache.set(`isbn:${cleanIsbn}:${u.title || ''}`, byIsbn[cleanIsbn])
-            cacheUpdated = true
-          }
-        }
-      } catch {
-        // ignore tier 1 failure
-      }
-    }
-  }
-
-  // Tier 2: 剩余未命中封面的书目交由服务端 /api/covers/resolve (forceInternet: true，直接搜百度/必应图片，不碰杭图/浙图)
+  // 封面查询直接交由 Vercel 服务端 /api/covers/resolve（优先命中服务端 .cover-cache.json 缓存，未命中则搜百度/必应图源，0 阿里云函数消耗）
   const stillMissing = unresolved.filter((u) => !resolvedById[u.id])
   if (stillMissing.length > 0) {
     try {
       const resp = await window.fetch('/api/covers/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: stillMissing, forceInternet: true }),
+        body: JSON.stringify({ items: stillMissing, forceInternet }),
       })
       const data = await resp.json()
       if (data?.ok && data.covers) {
