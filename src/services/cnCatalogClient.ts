@@ -615,9 +615,13 @@ export async function handleCatalogSearchDirect(body: any): Promise<any> {
           let html = ''
           let previewsMap: Record<string, any[]> = {}
           let pipelineTotal = 0
+          let preParsedItems: any[] | null = null
 
           if (pipelineData?.hz) {
             html = String(pipelineData.hz.html || '')
+            if (Array.isArray(pipelineData.hz.items)) {
+              preParsedItems = pipelineData.hz.items
+            }
             previewsMap = pipelineData.hz.previews || {}
             pipelineTotal = Number(pipelineData.hz.total || 0)
           } else {
@@ -628,48 +632,80 @@ export async function handleCatalogSearchDirect(body: any): Promise<any> {
             ).text()
           }
 
-          const doc = new DOMParser().parseFromString(html, 'text/html')
-          const totalMatch = html.match(
-            /检索到\s*<strong[^>]*>\s*([\d,]+)\s*<\/strong>|检索到\s*[:：]?\s*([\d,]+)\s*条|共\s*([\d,]+)\s*条/
-          )
+          const totalMatch = html
+            ? html.match(
+                /检索到\s*<strong[^>]*>\s*([\d,]+)\s*<\/strong>|检索到\s*[:：]?\s*([\d,]+)\s*条|共\s*([\d,]+)\s*条/
+              )
+            : null
           const rawItems: any[] = []
-          doc.querySelectorAll('.bookmetaTD').forEach((td) => {
-            const tr = td.closest('tr')
-            const bibId = String(
-              td.querySelector('.bookmeta')?.getAttribute('bookrecno') ||
-                tr?.querySelector('.bookcover_img')?.getAttribute('bookrecno') ||
-                ''
-            ).trim()
-            const title = (td.querySelector('.bookmetaTitle a')?.textContent || '').replace(/\s+/g, ' ').trim()
-            if (!title || !bibId) return
-            const author = (td.querySelector('.author-link')?.textContent || '').replace(/\s+/g, ' ').trim()
-            const publisher = (td.querySelector('.publisher-link')?.textContent || '').replace(/\s+/g, ' ').trim()
-            const fullText = (td.textContent || '').replace(/\s+/g, ' ')
-            const pubDate = fullText.match(/出版日期:\s*([0-9.-]+)/)?.[1] || ''
-            const callNo = (td.querySelector('.callnosSpan')?.textContent || '').replace(/\s+/g, ' ').trim()
-            const isbn = String(
-              tr?.querySelector('.bookcover_img')?.getAttribute('isbn') ||
-                td.querySelector('.expressServiceTab')?.getAttribute('express_isbn') ||
-                ''
-            ).trim()
-            rawItems.push({
-              id: `catalog:hzlib:${bibId}`,
-              library: 'hzlib' as const,
-              subLibrary: '杭州图书馆馆藏',
-              bibId,
-              title,
-              author,
-              publisher,
-              pubDate,
-              isbn,
-              callNo,
-              availableCount: 0,
-              totalHoldings: 0,
-              availableBranches: [] as string[],
-              holdings: [] as any[],
-              _rel: calcRelevance(title, author, isbn),
+          if (preParsedItems) {
+            for (const it of preParsedItems) {
+              const bibId = String(it.bibId || '').trim()
+              const title = String(it.title || '').trim()
+              if (!title || !bibId) continue
+              const author = String(it.author || '').trim()
+              const publisher = String(it.publisher || '').trim()
+              const pubDate = String(it.pubDate || '').trim()
+              const callNo = String(it.callNo || '').trim()
+              const isbn = String(it.isbn || '').trim()
+              rawItems.push({
+                id: `catalog:hzlib:${bibId}`,
+                library: 'hzlib' as const,
+                subLibrary: '杭州图书馆馆藏',
+                bibId,
+                title,
+                author,
+                publisher,
+                pubDate,
+                isbn,
+                callNo,
+                availableCount: 0,
+                totalHoldings: 0,
+                availableBranches: [] as string[],
+                holdings: [] as any[],
+                _rel: calcRelevance(title, author, isbn),
+              })
+            }
+          } else if (html) {
+            const doc = new DOMParser().parseFromString(html, 'text/html')
+            doc.querySelectorAll('.bookmetaTD').forEach((td) => {
+              const tr = td.closest('tr')
+              const bibId = String(
+                td.querySelector('.bookmeta')?.getAttribute('bookrecno') ||
+                  tr?.querySelector('.bookcover_img')?.getAttribute('bookrecno') ||
+                  ''
+              ).trim()
+              const title = (td.querySelector('.bookmetaTitle a')?.textContent || '').replace(/\s+/g, ' ').trim()
+              if (!title || !bibId) return
+              const author = (td.querySelector('.author-link')?.textContent || '').replace(/\s+/g, ' ').trim()
+              const publisher = (td.querySelector('.publisher-link')?.textContent || '').replace(/\s+/g, ' ').trim()
+              const fullText = (td.textContent || '').replace(/\s+/g, ' ')
+              const pubDate = fullText.match(/出版日期:\s*([0-9.-]+)/)?.[1] || ''
+              const callNo = (td.querySelector('.callnosSpan')?.textContent || '').replace(/\s+/g, ' ').trim()
+              const isbn = String(
+                tr?.querySelector('.bookcover_img')?.getAttribute('isbn') ||
+                  td.querySelector('.expressServiceTab')?.getAttribute('express_isbn') ||
+                  ''
+              ).trim()
+              rawItems.push({
+                id: `catalog:hzlib:${bibId}`,
+                library: 'hzlib' as const,
+                subLibrary: '杭州图书馆馆藏',
+                bibId,
+                title,
+                author,
+                publisher,
+                pubDate,
+                isbn,
+                callNo,
+                availableCount: 0,
+                totalHoldings: 0,
+                availableBranches: [] as string[],
+                holdings: [] as any[],
+                _rel: calcRelevance(title, author, isbn),
+              })
             })
-          })
+          }
 
           if (rawItems.length > 0) {
             try {
@@ -682,6 +718,17 @@ export async function handleCatalogSearchDirect(body: any): Promise<any> {
                 ).json()
                 previewsMap = prevRes?.previews || {}
               }
+              const normPreview = (p: any) =>
+                Array.isArray(p)
+                  ? {
+                      curlib: String(p[0] || ''),
+                      curlibName: String(p[1] || ''),
+                      curlocalName: String(p[2] || ''),
+                      callno: String(p[3] || ''),
+                      copycount: Number(p[4] ?? 1),
+                      loanableCount: Number(p[5] ?? 0),
+                    }
+                  : p
               const matchHzBranch = (p: any): boolean => {
                 if (!hzTargetBranch) return true
                 const curlib = String(p.curlib || '')
@@ -711,7 +758,7 @@ export async function handleCatalogSearchDirect(body: any): Promise<any> {
               }
 
               for (const item of rawItems) {
-                const scoped = (previewsMap[item.bibId] || []).filter(matchHzBranch)
+                const scoped = (previewsMap[item.bibId] || []).map(normPreview).filter(matchHzBranch)
                 let totalCopies = 0
                 let availCopies = 0
                 const previewHoldings: any[] = []

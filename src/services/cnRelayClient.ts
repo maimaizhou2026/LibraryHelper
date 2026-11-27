@@ -131,6 +131,8 @@ export async function cnRelayFetch(
     throw new Error(data.message || `中转请求失败 (${data.errorCode || 'RELAY_ERR'})`)
   }
   const status = Number(data?.status || 200)
+  const hasBodyText = typeof data?.bodyText === 'string'
+  const bodyText = hasBodyText ? String(data.bodyText) : ''
   const bodyBase64 = String(data?.bodyBase64 || '')
   const setCookies = Array.isArray(data?.setCookies) ? data.setCookies.map(String) : []
   const lowerHeaders: Record<string, string> = {}
@@ -145,12 +147,12 @@ export async function cnRelayFetch(
     headers: lowerHeaders,
     setCookies,
     bodyBase64,
-    text: () => base64ToUtf8(bodyBase64),
+    text: () => (hasBodyText ? bodyText : base64ToUtf8(bodyBase64)),
     json: () => {
-      const t = base64ToUtf8(bodyBase64)
+      const t = hasBodyText ? bodyText : base64ToUtf8(bodyBase64)
       return t ? JSON.parse(t) : {}
     },
-    bytes: () => base64ToBytes(bodyBase64),
+    bytes: () => (hasBodyText ? new TextEncoder().encode(bodyText) : base64ToBytes(bodyBase64)),
   }
 }
 

@@ -52,6 +52,62 @@ function isAllowedCallerOrigin(originHeader) {
   }
 }
 
+function decodeHtmlEntities(str) {
+  return String(str || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&middot;/gi, '·')
+    .replace(/&mdash;/gi, '—')
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(Number(dec)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+}
+
+function stripTags(str) {
+  return decodeHtmlEntities(String(str || '').replace(/<[^>]+>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function extractHzSearchItems(html) {
+  const items = []
+  const trRegex = /<tr\b[^>]*>[\s\S]*?<\/tr>/gi
+  for (const m of String(html || '').matchAll(trRegex)) {
+    const tr = m[0]
+    if (!tr.includes('bookmetaTD')) continue
+    const bibId = (tr.match(/bookrecno="(\d+)"/i) || [])[1] || ''
+    const titleMatch = tr.match(/class="[^"]*bookmetaTitle[^"]*"[\s\S]*?<a\b[^>]*>([\s\S]*?)<\/a>/i)
+    const title = titleMatch ? stripTags(titleMatch[1]) : ''
+    if (!bibId || !title) continue
+    const authorMatch = tr.match(/class="[^"]*author-link[^"]*"[^>]*>([\s\S]*?)<\/a>/i)
+    const author = authorMatch ? stripTags(authorMatch[1]) : ''
+    const pubMatch = tr.match(/class="[^"]*publisher-link[^"]*"[^>]*>([\s\S]*?)<\/a>/i)
+    const publisher = pubMatch ? stripTags(pubMatch[1]) : ''
+    const plainTd = stripTags(tr)
+    const pubDate = (plainTd.match(/出版日期:\s*([0-9.-]+)/) || [])[1] || ''
+    const callMatch = tr.match(/class="[^"]*callnosSpan[^"]*"[^>]*>([\s\S]*?)<\/span>/i)
+    const callNo = callMatch ? stripTags(callMatch[1]) : ''
+    const isbn = (
+      (tr.match(/\bisbn="([^"]*)"/i) || tr.match(/\bexpress_isbn="([^"]*)"/i) || [])[1] || ''
+    ).trim()
+    items.push({ bibId, title, author, publisher, pubDate, callNo, isbn })
+  }
+  return items
+}
+
+function slimHzLoanHtml(html) {
+  const s = String(html || '')
+  if (!s || s.includes('id="loginForm"')) return s
+  const tableMatch = s.match(/<table\b[^>]*id="contentTable"[\s\S]*?<\/table>/i)
+  if (!tableMatch) return s
+  const pdsMatch = s.match(/<input\b[^>]*name="pdsToken"[^>]*>/i)
+  const nextMatch = s.match(/<input\b[^>]*name="hasNextPage"[^>]*>/i)
+  return `${pdsMatch ? pdsMatch[0] : ''}${nextMatch ? nextMatch[0] : ''}${tableMatch[0]}`
+}
+
 function decompressBuffer(buf, encoding) {
   const enc = String(encoding || '').toLowerCase().trim()
   try {
@@ -132,18 +188,34 @@ function forwardToLibrary(urlStr, options, redirectCount = 0) {
         res.on('end', () => {
           const rawBuf = Buffer.concat(chunks)
           const decodedBuf = decompressBuffer(rawBuf, res.headers['content-encoding'])
-          const cleanHeaders = {}
-          for (const [k, v] of Object.entries(res.headers)) {
-            if (v !== undefined && k.toLowerCase() !== 'content-encoding') {
-              cleanHeaders[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v)
-            }
+          const contentType = String(res.headers['content-type'] || '').toLowerCase()
+          const isBinary =
+            contentType.includes('image/') ||
+            contentType.includes('octet-stream') ||
+            targetUrl.pathname.includes('validateCodeImage')
+
+          if (isBinary) {
+            resolve({
+              ok: status >= 200 && status < 300,
+              status,
+              setCookies,
+              bodyBase64: decodedBuf.toString('base64'),
+            })
+            return
+          }
+
+          let bodyText = decodedBuf.toString('utf8')
+          if (
+            targetUrl.hostname.includes('zjhzlib.cn') &&
+            /\/opac\/loan\/(currentLoanList|historyLoanList|renewList)/.test(targetUrl.pathname)
+          ) {
+            bodyText = slimHzLoanHtml(bodyText)
           }
           resolve({
             ok: status >= 200 && status < 300,
             status,
-            headers: cleanHeaders,
             setCookies,
-            bodyBase64: decodedBuf.toString('base64'),
+            bodyText,
           })
         })
         res.on('error', reject)
@@ -170,7 +242,7 @@ const server = http.createServer((req, res) => {
     res.end(
       JSON.stringify({
         ok: true,
-        service: 'LibraryHelper CN Relay Worker',
+        service: 'LibraryHelper CN Relay v1.0.10',
         timestamp: new Date().toISOString(),
       })
     )
@@ -204,8 +276,18 @@ const server = http.createServer((req, res) => {
     const sendJson = (obj) => {
       const rawJson = Buffer.from(JSON.stringify(obj), 'utf8')
       const acceptEnc = String(req.headers['accept-encoding'] || '').toLowerCase()
-      if (acceptEnc.includes('gzip') && rawJson.byteLength > 1024) {
-        const gz = zlib.gzipSync(rawJson)
+      if (acceptEnc.includes('br') && rawJson.byteLength > 512) {
+        const br = zlib.brotliCompressSync(rawJson, {
+          params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 },
+        })
+        res.setHeader('Content-Encoding', 'br')
+        res.setHeader('Content-Length', String(br.byteLength))
+        res.statusCode = 200
+        res.end(br)
+        return
+      }
+      if (acceptEnc.includes('gzip') && rawJson.byteLength > 512) {
+        const gz = zlib.gzipSync(rawJson, { level: 9 })
         res.setHeader('Content-Encoding', 'gzip')
         res.setHeader('Content-Length', String(gz.byteLength))
         res.statusCode = 200
@@ -248,7 +330,11 @@ const server = http.createServer((req, res) => {
                     bodyBase64: Buffer.from(JSON.stringify(payload), 'utf8').toString('base64'),
                     timeoutMs: 6500,
                   })
-                  return JSON.parse(Buffer.from(r.bodyBase64, 'base64').toString('utf8') || '{}')
+                  const text =
+                    typeof r.bodyText === 'string'
+                      ? r.bodyText
+                      : Buffer.from(r.bodyBase64 || '', 'base64').toString('utf8')
+                  return JSON.parse(text || '{}')
                 }
 
                 const zjTitleResp = await postZjJson(
@@ -301,13 +387,36 @@ const server = http.createServer((req, res) => {
                         `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/resourceList`,
                         { id: workId, sourceType }
                       )
-                      copiesByWorkId[workId] = resList?.data?.[0] || []
+                      const rawCopies = resList?.data?.[0] || []
+                      copiesByWorkId[workId] = rawCopies.map((c) => ({
+                        districtId: c.districtId,
+                        state: c.state,
+                        state_name: c.state_name,
+                        local_name: c.local_name || c.lib_name || c.location_name || '',
+                        callno: c.callno || '',
+                        shelf_mark:
+                          (c.state === 2 || c.state === 16) && c.shelf_mark
+                            ? c.shelf_mark
+                            : undefined,
+                        barcode: c.barcode || '',
+                        vol_info: c.vol_info || undefined,
+                      }))
                     } catch {
                       copiesByWorkId[workId] = []
                     }
                   })
                 )
-                return { total, records: mergedRaw, copiesByWorkId }
+                const slimRecords = mergedRaw.map((r) => ({
+                  id: r.id,
+                  originalId: r.originalId,
+                  sourceType: r.sourceType,
+                  title: r.title,
+                  creator: r.creator,
+                  publisher: r.publisher,
+                  dateIssue: r.dateIssue,
+                  identifierIsbn: r.identifierIsbn,
+                }))
+                return { total, records: slimRecords, copiesByWorkId }
               } catch {
                 return { total: 0, records: [], copiesByWorkId: {} }
               }
@@ -323,7 +432,10 @@ const server = http.createServer((req, res) => {
                   headers: { 'User-Agent': DEFAULT_UA },
                   timeoutMs: 6500,
                 })
-                const fullHtml = Buffer.from(searchRes.bodyBase64, 'base64').toString('utf8')
+                const fullHtml =
+                  typeof searchRes.bodyText === 'string'
+                    ? searchRes.bodyText
+                    : Buffer.from(searchRes.bodyBase64 || '', 'base64').toString('utf8')
                 const totalMatch = fullHtml.match(
                   /检索到\s*<strong[^>]*>\s*([\d,]+)\s*<\/strong>|检索到\s*[:：]?\s*([\d,]+)\s*条|共\s*([\d,]+)\s*条/
                 )
@@ -331,8 +443,8 @@ const server = http.createServer((req, res) => {
                   ? (totalMatch[1] || totalMatch[2] || totalMatch[3] || '').replace(/,/g, '')
                   : ''
 
-                const recnoMatches = [...fullHtml.matchAll(/bookrecno="(\d+)"/g)].map((m) => m[1])
-                const uniqueRecnos = [...new Set(recnoMatches)]
+                const items = extractHzSearchItems(fullHtml)
+                const uniqueRecnos = [...new Set(items.map((x) => x.bibId))]
                 let previews = {}
                 if (uniqueRecnos.length > 0) {
                   try {
@@ -342,29 +454,40 @@ const server = http.createServer((req, res) => {
                       headers: { 'User-Agent': DEFAULT_UA },
                       timeoutMs: 5500,
                     })
-                    const prevJson = JSON.parse(Buffer.from(prevRes.bodyBase64, 'base64').toString('utf8') || '{}')
-                    previews = prevJson?.previews || {}
+                    const prevText =
+                      typeof prevRes.bodyText === 'string'
+                        ? prevRes.bodyText
+                        : Buffer.from(prevRes.bodyBase64 || '', 'base64').toString('utf8')
+                    const prevJson = JSON.parse(prevText || '{}')
+                    const rawPreviews = prevJson?.previews || {}
+                    for (const [k, list] of Object.entries(rawPreviews)) {
+                      previews[k] = (Array.isArray(list) ? list : []).map((p) => [
+                        p.curlib || '',
+                        p.curlibName || '',
+                        p.curlocalName || '',
+                        p.callno || '',
+                        Number(p.copycount || 1),
+                        p.loanableCount !== undefined && p.loanableCount !== null
+                          ? Number(p.loanableCount)
+                          : p.state === 2
+                            ? Number(p.copycount || 1)
+                            : 0,
+                      ])
+                    }
                   } catch {
                     // ignore preview error
                   }
                 }
-                // 仅截取包含 .bookmetaTD 的表格主体片段，剥离首尾冗余脚本样式以节省 75% 流量
-                const tableStart = fullHtml.indexOf('<table class="resultTable')
-                const tableEnd = fullHtml.lastIndexOf('</table>')
-                const slimHtml =
-                  tableStart >= 0 && tableEnd > tableStart
-                    ? fullHtml.slice(tableStart, tableEnd + 8)
-                    : fullHtml
                 return {
                   total: rawTotalStr ? Number(rawTotalStr) : uniqueRecnos.length,
-                  html: slimHtml,
+                  items,
                   previews,
                 }
               } catch {
-                return { total: 0, html: '', previews: {} }
+                return { total: 0, items: [], previews: {} }
               }
             })()
-          : Promise.resolve({ total: 0, html: '', previews: {} })
+          : Promise.resolve({ total: 0, items: [], previews: {} })
 
         const [zj, hz] = await Promise.all([zjTask, hzTask])
         sendJson({ ok: true, pipeline: true, zj, hz })
@@ -384,7 +507,10 @@ const server = http.createServer((req, res) => {
           `https://my1.zjhzlib.cn/opac/certificate/pem?checkCode=${Date.now()}opac`,
           { method: 'GET', headers: { 'User-Agent': DEFAULT_UA, Cookie: sessionCookie } }
         )
-        const pemKey = Buffer.from(pemRes.bodyBase64, 'base64').toString('utf8')
+        const pemKey =
+          typeof pemRes.bodyText === 'string'
+            ? pemRes.bodyText
+            : Buffer.from(pemRes.bodyBase64 || '', 'base64').toString('utf8')
         let captchaImage = ''
         if (includeImage) {
           const vcRes = await forwardToLibrary(
