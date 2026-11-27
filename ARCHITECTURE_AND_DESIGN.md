@@ -54,7 +54,7 @@
 - **PC 宽屏端**：
   - 已知总馆/专业分馆直接生成带完整初始化指令（`poiShareUid` + `querytype=s`）的百度地图 **17 级街道比例尺** 精准建筑详情页 URL（`https://map.baidu.com/poi/{name}/@{x},{y},17z?uid={uid}&poiShareUid={uid}&querytype=s&da_src=shareurl&wd={name}&c={cityCode}`），打开即触发百度地图 `revertPoiShareUid` 锁定目标场馆建筑并展开详细地址与路线导航卡片；
   - 针对基层街道/社区分馆、杭州书房及邻里阅读空间（如 `网易蜗牛读书馆`、`望江街道杭州书房` 等），通过本地代理 `/api/map/go` 实时调用百度地图 POI 接口解析首个匹配点位坐标并 302 直达 17 级建筑定位页；
-- **移动端**：真机环境通过 `geo:0,0?q=...` 唤起系统默认地图软件（高德/百度/腾讯地图），移动预览环境下打开移动端地图导航页。
+- **移动端（iOS / Android 跨平台兼容）**：点击「地图」按钮弹出移动端底部地图选择面板（支持 **高德地图 / 百度地图 / 苹果地图 (`https://maps.apple.com/?q=...`) / 腾讯地图** 官方 `https://` Universal Links 通用链接），支持勾选「记住我的选择，下次直接打开」（持久化于 `lh_preferred_map_provider_v1`），并在地址浮层提供「切换地图打开」快捷重选入口，彻底解决 iOS Safari 不支持 `geo:` 协议的问题。
 
 ### 3.7 首页双馆全量书目在线联查（`/api/catalog/search` + `OnlineCatalogSection.vue`）
 - 在首页搜索区支持一键切换 **「📚 搜我的借阅」** 与 **「🌐 在线搜浙图/杭图全馆书库」**（支持双馆联查、仅浙江图书馆、仅杭州图书馆）；
@@ -75,7 +75,7 @@
   - 同步弹窗提供第 3 个 Tab **「💾 本地导入/导出」**，导出 JSON 备份时自动写入 `accounts: { hzlibAccount, zjlibAccount }` 与每条记录的 `account` 标识；
   - 导入本地 JSON 备份时强制比对备份文件中的账号与当前本地绑定账号：若账号不一致则直接拒绝导入并提示冲突账号，防止不同读者的借阅数据混入。
 
-### 3.9 多用户无状态会话隔离与浏览器端密码前置加密（`src/utils/cryptoAuth.ts`）
+### 3.10 多用户无状态会话隔离与浏览器端密码前置加密（`src/utils/cryptoAuth.ts`）
 - **服务端零用户全局状态**：移除服务端进程级共享的杭图同步结果缓存与 `JSESSIONID` 会话变量，每个用户的浙图 `BFF-USER-TOKEN` 与杭图 `sessionCookie`（`lh_hzlib_cookie`）100% 由各自浏览器本地持有并按次随请求携带，彻底杜绝 Vercel Serverless 热实例在多用户并发使用时的串号与数据泄漏；
 - **密码加密前移至浏览器端**：浙江图书馆密码在浏览器本地通过 `encryptZjlibPasswordClient`（SM2 公钥加密）转为密文，杭州图书馆密码在浏览器本地通过 `/api/hzlib/captcha?mode=init` 预获取当次会话公钥后由 `encryptHzlibPasswordClient`（纯 `BigInt` 实现的标准 RSA PKCS#1 v1.5 公钥加密）转为密文，发往 `/api/*` 后端的网络请求仅传输 `encryptedPassword` 密文，且本地 `localStorage` 凭证通过 `encodeLocalSecret` 混淆存储，避免明文密码在网络请求与本地存储中裸露。
 - **公网部署与多用户高并发安全加固（`src/server/libraryProxy.ts`）**：
@@ -85,3 +85,18 @@
   4. **封面缓存并发原子写与 SSRF 防护**：`coverMemoryCache` 采用无原型对象（防原型链污染）并限制最大 **3000 条** 容量，写入 `.cover-cache.json` 采用异步串行锁 + `.tmp` 原子替换；上游 TLS 证书仅对特定旧系统域名放宽，并对封面 URL 实施公网 `http(s)` 与内网 IP 黑名单过滤；
   5. **零敏感信息脱敏诊断日志与 `/api/health?probe=1` 上游连通探测**：每个请求生成 `reqId`（`X-Request-Id`），异常经 `sanitizeDiagnosticText` 严格剥离任何凭证/证号/Token/长串字符后写入最近 30 条内存环形缓冲区与 `console.error`，支持通过 `/api/health?probe=1` 实时探测浙图/杭图双域名延迟与查看最近脱敏错误列表；公开无状态检索/馆藏查询启用 **45 秒** 微缓存。
   6. **跨境地域防火墙中转网关支持（`UPSTREAM_RELAY_URL` + `src/server/cnRelayWorker.mjs`）**：由于浙图（`www.zjlib.cn`）与杭图（`my1.zjhzlib.cn`）政务云防火墙屏蔽境外及香港云机房 IP（如 Vercel `hkg1`），服务端内置 `UPSTREAM_RELAY_URL`（及 `UPSTREAM_RELAY_SECRET`）环境变量支持，并提供零依赖单文件国内云函数转发脚本 `src/server/cnRelayWorker.mjs`（可免费部署于阿里云函数计算 FC 杭州节点或腾讯云 SCF）；同时对 `ETIMEDOUT` / `ENOTFOUND` 实施快速失败（Fail-Fast），移除已失效的 `opac.zjhzlib.cn` 备用域名，避免无效重试与错误掩盖。
+
+### 3.11 浏览器直连杭州阿里云函数计算与极致省流流水线（`cnRelayClient.ts` + `cnCatalogClient.ts` + `cnRelayWorker.mjs`）
+- **全程国内直连（彻底绕开香港 Vercel 防火墙阻断）**：
+  - 线上访问时，前端通过 `apiFetch` 使用 W3C CORS 简单请求（`POST` + `Content-Type: text/plain;charset=UTF-8`）直连阿里云函数计算杭州节点（`cn-hangzhou`），免除 `OPTIONS` 预检请求，实现杭州机房与浙图/杭图同城毫秒级互通；
+  - 结合阿里云 CDT（云数据传输）每月 **20 GB 中国内地免费公网出流量额度** 与 `minInstance = 0` 按需缩容机制，实现极低成本运行。
+- **三大云端聚合流水线（最小化函数调用次数）**：
+  1. **`mode: 'search_pipeline'`（双馆搜书 19 合 1）**：单次函数调用并发完成浙图检索、浙图前 12 本在馆复本、杭图检索与杭图全城网点在馆预览；之江馆 7 段层架标翻译推迟至用户主动展开某本浙图书馆藏时按需触发；
+  2. **`mode: 'hzlib_init'`（杭图登录初始化 3 合 1）**：单次函数调用完成 `login` 会话获取、`certificate/pem` RSA 公钥拉取及可选图形验证码图片获取；
+  3. **`mode: 'zjlib_holding'`（浙图单书详情馆藏 3 合 1）**：在「我的借阅」中查看浙图图书实时馆藏时，单次调用完成 `getWorkById`、`resourceList` 与之江馆层架标翻译。
+- **响应体极致瘦身与 `Brotli / Gzip` 高压传输（单次搜索流量再降 70%）**：
+  - 云端直接将杭图搜索结果 HTML 解析为 7 字段精简 `hz.items` JSON（免传 169 KB HTML），将 `hz.previews` 转换为 6 元紧凑元组，并对 `zj.records` 与 `zj.copiesByWorkId` 实施字段白名单裁剪；
+  - 通用转发接口对文本/JSON/HTML 启用 UTF-8 `bodyText` 直传（消除 33% Base64 膨胀），杭图借阅同步仅截取 `#contentTable` 表格主体，并优先使用 `Brotli (br, Q5)` 与 `Gzip (L9)` 压缩，单次双馆搜索出网流量仅约 **12 KB**。
+- **检索触发控制与「先快后大（4 + 12）」封面补全策略**：
+  - **本地借阅检索**：输入停顿 **1000ms** 防抖触发；缺失封面采用「首屏前 4 本极速请求 + 后续 12 本合并请求」并配备序列号抢占（`localCoverResolveSeq`），优先命中本地 `localStorage`（`lh_client_cover_cache_v1`）与 Vercel `.cover-cache.json`，**0 阿里云函数调用**；
+  - **在线全馆检索**：严格限制仅在用户主动点击「在线搜索」/按回车或点击底部「加载更多书目」按钮时发起网络请求；切换「只看有书 / 自动归类 / 分馆下拉框」直接复用 45 秒客户端管道缓存。

@@ -966,6 +966,37 @@ export async function handleHoldingQueryDirect(body: any): Promise<any> {
   }
 
   // 浙江图书馆馆藏查询
+  try {
+    const pipe = await cnRelayPipeline({ mode: 'zjlib_holding', bibId })
+    if (pipe?.ok && pipe.pipeline && Array.isArray(pipe.copies)) {
+      const rec = pipe.record || {}
+      const rawList: any[] = pipe.copies
+      const shelfDescMap: Record<string, string> = pipe.shelfDescMap || {}
+      for (const [k, v] of Object.entries(shelfDescMap)) {
+        if (typeof v === 'string' && v) zhijiangShelfDescCache.set(k, v)
+      }
+      const creatorStr = Array.isArray(rec.creator) ? rec.creator.join(',') : String(rec.creator || '')
+      const publisherStr = Array.isArray(rec.publisher) ? rec.publisher.join(',') : String(rec.publisher || '')
+      const bookTitle = Array.isArray(rec.title) ? rec.title[0] : String(rec.title || title || '')
+      const holdings = formatZjlibCopiesWithDescMap(rawList, shelfDescMap, bookTitle, callNo, creatorStr, publisherStr)
+      const primaryNavHolding =
+        holdings.find((h) => h.isAvailable && h.navUrl) || holdings.find((h) => h.navUrl)
+      return setClientCache(cacheKey, {
+        ok: true,
+        library: 'zjlib',
+        bibId,
+        officialUrl: `https://www.zjlib.cn/search/book?id=${encodeURIComponent(bibId)}`,
+        primaryNavUrl: primaryNavHolding?.navUrl || '',
+        primaryShelfNo: primaryNavHolding?.shelfNo || '',
+        totalCount: holdings.length,
+        availableCount: holdings.filter((h: any) => h.isAvailable).length,
+        holdings,
+      })
+    }
+  } catch {
+    // fallback to multi-step fetch if relay worker not yet upgraded
+  }
+
   const zjHeaders = { 'Content-Type': 'application/json', 'BFF-ORG-ID': ZJLIB_ORG_ID }
   const workResp = (
     await cnRelayFetch(`${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/getWorkById`, {

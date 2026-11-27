@@ -18,6 +18,8 @@ import zlib from 'node:zlib'
 
 const PORT = Number(process.env.FC_SERVER_PORT || process.env.SCF_RUNTIME_PORT || process.env.PORT || 9000)
 const RELAY_SECRET = String(process.env.RELAY_SECRET || process.env.UPSTREAM_RELAY_SECRET || '').trim()
+const MAX_BODY_BYTES = 256 * 1024
+const IS_ALIYUN_FC = Boolean(process.env.FC_SERVER_PORT || process.env.FC_FUNC_CODE_PATH)
 const ZJLIB_ORG_ID = '1916318653650423810'
 const ZJLIB_API_BASE = 'https://www.zjlib.cn/bff-api'
 const DEFAULT_UA =
@@ -234,15 +236,27 @@ function forwardToLibrary(urlStr, options, redirectCount = 0) {
 }
 
 const server = http.createServer((req, res) => {
+  if (!IS_ALIYUN_FC) {
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Relay-Secret')
+    res.setHeader('Access-Control-Max-Age', '86400')
+  }
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.setHeader('Cache-Control', 'no-store')
+
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 204
+    res.end()
+    return
+  }
 
   if (req.method === 'GET') {
     res.statusCode = 200
     res.end(
       JSON.stringify({
         ok: true,
-        service: 'LibraryHelper CN Relay v1.0.10',
+        service: 'LibraryHelper CN Relay v1.0.11',
         timestamp: new Date().toISOString(),
       })
     )
@@ -271,8 +285,23 @@ const server = http.createServer((req, res) => {
   }
 
   const chunks = []
-  req.on('data', (c) => chunks.push(Buffer.from(c)))
+  let totalBytes = 0
+  let aborted = false
+  req.on('data', (c) => {
+    if (aborted) return
+    const buf = Buffer.from(c)
+    totalBytes += buf.byteLength
+    if (totalBytes > MAX_BODY_BYTES) {
+      aborted = true
+      res.statusCode = 413
+      res.end(JSON.stringify({ relayError: true, errorCode: 'PAYLOAD_TOO_LARGE', message: 'Request body exceeds 256KB' }))
+      req.destroy()
+      return
+    }
+    chunks.push(buf)
+  })
   req.on('end', async () => {
+    if (aborted) return
     const sendJson = (obj) => {
       const rawJson = Buffer.from(JSON.stringify(obj), 'utf8')
       const acceptEnc = String(req.headers['accept-encoding'] || '').toLowerCase()
@@ -520,6 +549,104 @@ const server = http.createServer((req, res) => {
           captchaImage = `data:image/jpeg;base64,${vcRes.bodyBase64}`
         }
         sendJson({ ok: true, pipeline: true, sessionCookie, pemKey, captchaImage })
+        return
+      }
+
+      // 模式 C：浙图单书实时馆藏与之江馆层架标 3 合 1 聚合查询（getWorkById + resourceList + get/shelf/description/map）
+      if (body.mode === 'zjlib_holding') {
+        const bibId = String(body.bibId || '').trim()
+        const zjHeaders = {
+          'User-Agent': DEFAULT_UA,
+          'Content-Type': 'application/json',
+          'BFF-ORG-ID': ZJLIB_ORG_ID,
+          Origin: 'https://www.zjlib.cn',
+          Referer: 'https://www.zjlib.cn/',
+        }
+        const postZjJson = async (url, payload) => {
+          const r = await forwardToLibrary(url, {
+            method: 'POST',
+            headers: zjHeaders,
+            bodyBase64: Buffer.from(JSON.stringify(payload), 'utf8').toString('base64'),
+            timeoutMs: 6500,
+          })
+          const text =
+            typeof r.bodyText === 'string'
+              ? r.bodyText
+              : Buffer.from(r.bodyBase64 || '', 'base64').toString('utf8')
+          return JSON.parse(text || '{}')
+        }
+        const workResp = await postZjJson(
+          `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/getWorkById`,
+          { bibliosId: bibId, orgId: ZJLIB_ORG_ID }
+        )
+        const workRecord = (workResp && workResp.data && workResp.data.record) || {}
+        const workId = Array.isArray(workRecord.id) ? workRecord.id[0] : workRecord.id || bibId
+        const sourceTypeArr = Array.isArray(workRecord.sourceType)
+          ? workRecord.sourceType
+          : workRecord.sourceType
+            ? [workRecord.sourceType]
+            : ['0']
+        const resListResp = await postZjJson(
+          `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/resourceList`,
+          { id: workId, sourceType: sourceTypeArr.join(',') }
+        )
+        const rawList = (resListResp && resListResp.data && resListResp.data[0]) || []
+        const zhijiangId = '1916325141324353538'
+        const shelfPrefixes = [
+          ...new Set(
+            rawList
+              .filter(
+                (c) =>
+                  String(c.districtId || '') === zhijiangId &&
+                  (c.state === 2 || c.state === 16) &&
+                  Boolean(String(c.shelf_mark || '').trim())
+              )
+              .map((c) => {
+                let p = String(c.shelf_mark || '').trim()
+                while ((p.match(/-/g) || []).length > 6) {
+                  p = p.slice(0, p.lastIndexOf('-'))
+                }
+                return p
+              })
+          ),
+        ]
+        let shelfDescMap = {}
+        if (shelfPrefixes.length > 0) {
+          try {
+            const descResp = await postZjJson(
+              `${ZJLIB_API_BASE}/portal-admin-service/portal-pc-api/search/get/shelf/description/map`,
+              { orgId: ZJLIB_ORG_ID, shelfNoList: shelfPrefixes }
+            )
+            if (descResp && descResp.code === 200 && descResp.data) {
+              shelfDescMap = descResp.data
+            }
+          } catch {
+            // ignore
+          }
+        }
+        const copies = rawList.map((c) => ({
+          districtId: c.districtId,
+          state: c.state,
+          state_name: c.state_name,
+          local_name: c.local_name || c.lib_name || c.location_name || '',
+          callno: c.callno || '',
+          shelf_mark:
+            (c.state === 2 || c.state === 16) && c.shelf_mark ? c.shelf_mark : undefined,
+          barcode: c.barcode || '',
+          vol_info: c.vol_info || undefined,
+        }))
+        sendJson({
+          ok: true,
+          pipeline: true,
+          record: {
+            id: workRecord.id,
+            title: workRecord.title,
+            creator: workRecord.creator,
+            publisher: workRecord.publisher,
+          },
+          copies,
+          shelfDescMap,
+        })
         return
       }
 

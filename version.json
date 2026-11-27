@@ -1,5 +1,5 @@
 {
-  "version": "1.0.10",
+  "version": "1.0.11",
   "updatedAt": "2026-11-27",
-  "description": "阿里云中转响应体极致瘦身与 Brotli/Gzip 高压传输：杭图搜索 HTML 云端直转 JSON、馆藏预览元组化、文本转发去 Base64 膨胀，单次搜书出网流量再降 70%"
+  "description": "新增浙图单书实时馆藏 3 合 1 聚合流水线 (zjlib_holding)、中转网关 256KB 请求体保护与 FC 网关自适应 CORS 头，并同步更新系统架构文档"
 }
